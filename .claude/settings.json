@@ -9,7 +9,9 @@
       "WebFetch(domain:www.amazon.com)",
       "WebFetch(domain:www.aliexpress.us)",
       "Bash(Get-ChildItem -Path \"d:\\\\hans_docs\\\\github\\\\irrigation_control\" -Recurse -File)",
-      "Bash(Select-Object -ExpandProperty FullName)"
+      "Bash(Select-Object -ExpandProperty FullName)",
+      "PowerShell(Get-Command pio -ErrorAction SilentlyContinue; where.exe pio 2>$null; Get-ChildItem \"$env:USERPROFILE\\\\.platformio\\\\penv\\\\Scripts\\\\pio.exe\" -ErrorAction SilentlyContinue)",
+      "PowerShell(cd \"d:\\\\hans_docs\\\\github\\\\irrigation_control\"; & \"$env:USERPROFILE\\\\.platformio\\\\penv\\\\Scripts\\\\pio.exe\" run --target upload)"
     ]
   }
 }
