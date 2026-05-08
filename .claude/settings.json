@@ -11,7 +11,9 @@
       "Bash(Get-ChildItem -Path \"d:\\\\hans_docs\\\\github\\\\irrigation_control\" -Recurse -File)",
       "Bash(Select-Object -ExpandProperty FullName)",
       "PowerShell(Get-Command pio -ErrorAction SilentlyContinue; where.exe pio 2>$null; Get-ChildItem \"$env:USERPROFILE\\\\.platformio\\\\penv\\\\Scripts\\\\pio.exe\" -ErrorAction SilentlyContinue)",
-      "PowerShell(cd \"d:\\\\hans_docs\\\\github\\\\irrigation_control\"; & \"$env:USERPROFILE\\\\.platformio\\\\penv\\\\Scripts\\\\pio.exe\" run --target upload)"
+      "PowerShell(cd \"d:\\\\hans_docs\\\\github\\\\irrigation_control\"; & \"$env:USERPROFILE\\\\.platformio\\\\penv\\\\Scripts\\\\pio.exe\" run --target upload)",
+      "PowerShell(cd \"d:\\\\hans_docs\\\\github\\\\irrigation_control\"; & \"$env:USERPROFILE\\\\.platformio\\\\penv\\\\Scripts\\\\pio.exe\" run --target upload 2>&1 | Select-String -Pattern \"error|warning|SUCCESS|FAILED|Uploading|Writing at 0x000d\" -CaseSensitive:$false)",
+      "PowerShell(cd \"d:\\\\hans_docs\\\\github\\\\irrigation_control\"; & \"$env:USERPROFILE\\\\.platformio\\\\penv\\\\Scripts\\\\pio.exe\" run --target upload 2>&1 | Select-String -Pattern \"error:|ERROR|SUCCESS|FAILED|Writing at 0x000d\" -CaseSensitive:$false)"
     ]
   }
 }
