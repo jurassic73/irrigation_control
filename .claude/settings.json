@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(& \"$env:USERPROFILE\\\\.platformio\\\\penv\\\\Scripts\\\\pio.exe\" run --target upload --project-dir \"d:\\\\hans_docs\\\\github\\\\irrigation_control\" --upload-port COM4 2>&1 | Select-String -Pattern \"error:|SUCCESS|FAILED|Connecting\")",
+      "Bash(C:\\\\Users\\\\admin\\\\.platformio\\\\penv\\\\Scripts\\\\pio.exe run *)",
+      "PowerShell(& \"C:\\\\Users\\\\admin\\\\.platformio\\\\penv\\\\Scripts\\\\pio.exe\" run --target upload 2>&1)",
+      "PowerShell(& \"C:\\\\Users\\\\admin\\\\.platformio\\\\penv\\\\Scripts\\\\pio.exe\" run 2>&1)",
+      "PowerShell(cd \"d:\\\\hans_docs\\\\github\\\\irrigation_control\"; & \"$env:USERPROFILE\\\\.platformio\\\\penv\\\\Scripts\\\\pio.exe\" run --target upload 2>&1)",
+      "WebFetch(domain:www.amazon.com)",
+      "WebFetch(domain:www.aliexpress.us)",
+      "Bash(Get-ChildItem -Path \"d:\\\\hans_docs\\\\github\\\\irrigation_control\" -Recurse -File)",
+      "Bash(Select-Object -ExpandProperty FullName)"
+    ]
+  }
+}

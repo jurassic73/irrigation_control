@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Irrigation Widget</title>
+<style>
+html, body { background: #f1f5f9; margin: 0; padding: 0; }
+/* ── Irrigation widget — safe to paste into any page ── */
+.irr-widget {
+  --irr-bg:    #ffffff;
+  --irr-sep:   #e2e8f0;
+  --irr-text:  #1e293b;
+  --irr-muted: #64748b;
+  --irr-green: #16a34a;
+  --irr-blue:  #2563eb;
+  --irr-amber: #ea580c;
+  --irr-red:   #dc2626;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  background: var(--irr-bg);
+  border: 1px solid var(--irr-sep);
+  border-radius: .35rem;
+  padding: .45rem .85rem;
+  width: 100%;
+  box-sizing: border-box;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  color: var(--irr-text);
+}
+/* LED */
+.irr-led {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--irr-muted);
+  transition: background .4s, box-shadow .4s;
+}
+.irr-led.green { background: var(--irr-green); box-shadow: 0 0 6px var(--irr-green); }
+.irr-led.blue  { background: var(--irr-blue);  box-shadow: 0 0 6px var(--irr-blue); animation: irr-pulse 1.4s ease-in-out infinite; }
+.irr-led.red   { background: var(--irr-red);   box-shadow: 0 0 6px var(--irr-red); }
+@keyframes irr-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: .3; }
+}
+/* Identity block */
+.irr-identity {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+  flex-shrink: 0;
+}
+.irr-name {
+  font-size: .82rem;
+  font-weight: 700;
+  color: var(--irr-text);
+  text-decoration: none;
+}
+.irr-name:hover { color: var(--irr-blue); }
+.irr-sub {
+  font-size: .68rem;
+  color: var(--irr-muted);
+  letter-spacing: .02em;
+}
+/* Status — fills remaining space */
+.irr-status {
+  font-size: .78rem;
+  font-weight: 600;
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--irr-muted);
+}
+.irr-status.watering { color: var(--irr-blue); }
+.irr-status.standby  { color: var(--irr-green); }
+.irr-status.offline  { color: var(--irr-red); }
+/* Metric columns */
+.irr-metrics {
+  display: flex;
+  gap: 1.1rem;
+  align-items: center;
+  flex-shrink: 0;
+}
+.irr-metric {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  line-height: 1.2;
+}
+.irr-metric-label {
+  font-size: .58rem;
+  font-weight: 600;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--irr-muted);
+}
+.irr-metric-value {
+  font-size: .78rem;
+  font-weight: 700;
+  color: var(--irr-text);
+}
+.irr-metric-value.cool     { color: var(--irr-green); }
+.irr-metric-value.hot      { color: var(--irr-amber); }
+.irr-metric-value.critical { color: var(--irr-red); }
+.irr-metric-value.active   { color: var(--irr-blue); }
+/* Uptime — far right, separate */
+.irr-uptime {
+  font-size: .72rem;
+  color: var(--irr-muted);
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+</style>
+
+<!-- PASTE FROM HERE -->
+<div class="irr-widget">
+  <div class="irr-led" id="irr-led"></div>
+  <div class="irr-identity">
+    <a class="irr-name" href="http://192.168.1.252/" target="_blank">Irrigation Control</a>
+    <span class="irr-sub">ESP32-S3 &bull; 192.168.1.252</span>
+  </div>
+  <div class="irr-status" id="irr-status">Connecting…</div>
+  <div class="irr-metrics">
+    <div class="irr-metric">
+      <span class="irr-metric-label">Zone</span>
+      <span class="irr-metric-value" id="irr-zone">—</span>
+    </div>
+    <div class="irr-metric">
+      <span class="irr-metric-label">Temp</span>
+      <span class="irr-metric-value" id="irr-temp">—</span>
+    </div>
+  </div>
+  <span class="irr-uptime" id="irr-uptime">—</span>
+</div>
+<script>
+(function(){
+  const ESP = 'http://192.168.1.252';
+  const $ = id => document.getElementById(id);
+
+  function fmtUptime(s) {
+    const d = Math.floor(s/86400), h = Math.floor((s%86400)/3600), m = Math.floor((s%3600)/60);
+    if (d > 0) return d+'d '+h+'h';
+    if (h > 0) return h+'h '+m+'m';
+    return m+'m';
+  }
+
+  function setOffline() {
+    $('irr-led').className      = 'irr-led red';
+    $('irr-status').className   = 'irr-status offline';
+    $('irr-status').textContent = 'Offline';
+    $('irr-zone').textContent   = '—';
+    $('irr-zone').className     = 'irr-metric-value';
+    $('irr-temp').textContent   = '—';
+    $('irr-temp').className     = 'irr-metric-value';
+    $('irr-uptime').textContent = '—';
+  }
+
+  async function refresh() {
+    try {
+      const [cfg, tmp] = await Promise.all([
+        fetch(ESP+'/config', {cache:'no-store'}).then(r => { if(!r.ok) throw 0; return r.json(); }),
+        fetch(ESP+'/temp',   {cache:'no-store'}).then(r => { if(!r.ok) throw 0; return r.json(); })
+      ]);
+
+      if (cfg.activeZone >= 0) {
+        const name = cfg.zones[cfg.activeZone]?.name || 'Zone '+(cfg.activeZone+1);
+        $('irr-led').className      = 'irr-led blue';
+        $('irr-status').className   = 'irr-status watering';
+        $('irr-status').textContent = 'Watering: '+name;
+      } else {
+        $('irr-led').className      = 'irr-led green';
+        $('irr-status').className   = 'irr-status standby';
+        $('irr-status').textContent = 'Standby';
+      }
+
+      const q = (cfg.queued||[]).length;
+      $('irr-zone').textContent = q > 0 ? q+' queued' : '—';
+      $('irr-zone').className   = 'irr-metric-value'+(q > 0 ? ' active' : '');
+
+      const f = tmp.f;
+      $('irr-temp').textContent = f != null ? f.toFixed(1)+'°F' : '—';
+      const tempCls = f == null ? '' : f > 257 ? ' critical' : f > 185 ? ' hot' : ' cool';
+      $('irr-temp').className   = 'irr-metric-value'+tempCls;
+
+      $('irr-uptime').textContent = cfg.uptime != null ? fmtUptime(cfg.uptime) : '—';
+    } catch(e) { setOffline(); }
+  }
+
+  refresh();
+  setInterval(refresh, 15000);
+})();
+</script>
+<!-- PASTE TO HERE -->
+
+</body>
+</html>
