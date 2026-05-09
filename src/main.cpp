@@ -229,6 +229,15 @@ void runQueue() {
   }
 }
 
+static String jsonEsc(const char* s) {
+  String r; r.reserve(strlen(s));
+  for (; *s; s++) {
+    if (*s == '"' || *s == '\\') r += '\\';
+    r += *s;
+  }
+  return r;
+}
+
 // ── Web page ──────────────────────────────────────────────────────────────────
 
 static const char INDEX_HTML[] PROGMEM = R"rawliteral(
@@ -292,11 +301,6 @@ h1{font-size:1.4rem;font-weight:600;color:#7dd3fc;letter-spacing:.05em;text-tran
 .alloff:hover{background:#3f1010;border-color:#b91c1c;color:#fca5a5}
 .topbar{display:flex;align-items:center;width:100%;max-width:500px;position:relative;margin-bottom:.25rem}
 .topbar h1{text-align:left}
-.theme-btn{position:absolute;right:0;background:none;border:none;cursor:pointer;font-size:1.3rem;line-height:1;padding:.1rem}
-.api-link{margin-top:1.25rem;font-size:.72rem;display:flex;align-items:center;width:100%;max-width:500px;white-space:nowrap}
-.api-link>*{flex:1}
-.api-link a{color:#94a3b8;text-decoration:none;letter-spacing:.03em}
-.api-link a:hover{color:#7dd3fc}
 #uptime{color:#94a3b8;font-size:.9rem;font-weight:600;letter-spacing:.03em;text-align:center;white-space:nowrap}
 #chip-temp{color:#94a3b8;font-size:.9rem;font-weight:600;letter-spacing:.03em;text-align:right;white-space:nowrap}
 body.light{background:#f1f5f9;color:#1e293b}
@@ -320,8 +324,6 @@ body.light .ep{border-color:#94a3b8}
 body.light .mbtn-cancel{background:#e2e8f0;color:#475569}
 body.light .modal-ov{background:rgba(0,0,0,.4)}
 body.light .modal-title{color:#0369a1}
-body.light .api-link a{color:#475569}
-body.light .api-link a:hover{color:#0369a1}
 body.light #uptime{color:#475569}
 body.light #chip-temp{color:#475569}
 body.light .day{background:#f8fafc;border-color:#94a3b8;color:#475569}
@@ -435,8 +437,6 @@ body.color .dur-preset{background:#262626;border-color:#606060;color:#38bdf8}
 body.color .dur-preset:hover{background:#1e3a5f;border-color:#0284c7}
 body.color .alloff{color:#f87171;border-color:#7f1d1d}
 body.color .alloff:hover{background:#3f1010;border-color:#b91c1c;color:#fca5a5}
-body.color .api-link a{color:#a3a3a3}
-body.color .api-link a:hover{color:#38bdf8}
 body.color #uptime,body.color #chip-temp{color:#737373}
 body.color .log-modal{background:#171717}
 body.color .log-head{border-color:#606060}
@@ -924,7 +924,7 @@ void setup() {
     j += "],\"zones\":[";
     for (int i = 0; i < NUM_ZONES; i++) {
       if (i) j += ",";
-      j += "{\"id\":" + String(i) + ",\"name\":\"" + String(relayNames[i]) + "\",\"pin\":" + String(relayPins[i]) + ",\"durations\":[";
+      j += "{\"id\":" + String(i) + ",\"name\":\"" + jsonEsc(relayNames[i]) + "\",\"pin\":" + String(relayPins[i]) + ",\"durations\":[";
       for (int pr = 0; pr < NUM_PROGRAMS; pr++) {
         if (pr) j += ",";
         j += String(zoneDuration[i][pr]);
@@ -1009,7 +1009,7 @@ void setup() {
       HistoryEntry& e = history[(histHead + i) % HISTORY_MAX];
       const char* trig = e.trigger <= NUM_PROGRAMS ? trigNames[e.trigger] : "Unknown";
       j += "{\"zone\":" + String(e.zone) +
-           ",\"name\":\"" + String(relayNames[e.zone]) + "\"" +
+           ",\"name\":\"" + jsonEsc(relayNames[e.zone]) + "\"" +
            ",\"trigger\":\"" + String(trig) + "\"" +
            ",\"start\":" + String((long)e.start) +
            ",\"durationSecs\":" + String(e.duration) + "}";
