@@ -325,6 +325,7 @@ body.light .api-link a:hover{color:#0369a1}
 body.light #uptime{color:#475569}
 body.light #chip-temp{color:#475569}
 body.light .day{background:#f8fafc;border-color:#94a3b8;color:#475569}
+body.light .day.on{background:#0369a1;color:#e0f2fe;border-color:#0369a1}
 .info-row{display:flex;align-items:center;justify-content:space-between;margin-top:1.25rem;width:100%;max-width:500px;gap:.5rem;flex-wrap:nowrap}
 .info-side{font-size:.9rem;font-weight:600;color:#94a3b8;text-decoration:none;flex:0 0 auto;display:flex;align-items:center;letter-spacing:.03em;white-space:nowrap;transition:color .15s}
 .info-side:hover{color:#e2e8f0}
@@ -450,6 +451,7 @@ body.color .tg-modal{background:#171717}
 body.color .tg-title{color:#38bdf8}
 body.color .tg-note{color:#a3a3a3}
 body.color .day{background:#1c1c1c;border-color:#606060;color:#737373}
+body.color .day.on{background:#0369a1;color:#e0f2fe;border-color:#0369a1}
 body.color .tg-btn{border-color:#606060;color:#a3a3a3}
 body.color .tg-btn.active{background:#0ea5e9;border-color:#0ea5e9;color:#fff}
 </style>
@@ -558,9 +560,8 @@ function renderPrograms(){
     c.className='pcard'+(p.enabled?' on':'');
     c.innerHTML='<div class="phead"><span class="pname">'+esc(p.name)+'</span>'+
       '<button class="ptog'+(p.enabled?' on':'')+'" onclick="toggleProg('+i+')"></button></div>'+
-      '<input class="ptime" type="time" id="pt'+i+'" value="'+pad(p.h)+':'+pad(p.m)+'">'+
-      '<div class="days">'+dh+'</div>'+
-      '<button class="sbtn" onclick="saveProg('+i+')">Save</button>';
+      '<input class="ptime" type="time" id="pt'+i+'" value="'+pad(p.h)+':'+pad(p.m)+'" onchange="saveProg('+i+')">'+
+      '<div class="days">'+dh+'</div>';
     el.appendChild(c);
   });
 }
@@ -603,7 +604,11 @@ function renderZones(){
   });
 }
 
-function togglePDay(pi,di){daysSel['p'+pi]^=(1<<di);renderPrograms();}
+async function togglePDay(pi,di){
+  daysSel['p'+pi]^=(1<<di);
+  renderPrograms();
+  await fetch('/setprogram?id='+pi+'&en='+(programs[pi].enabled?1:0)+'&h='+programs[pi].h+'&m='+programs[pi].m+'&days='+daysSel['p'+pi]);
+}
 
 async function toggleProg(i){
   programs[i].enabled=!programs[i].enabled;
