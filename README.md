@@ -38,6 +38,8 @@ Prices are approximate and subject to change.
 | --- | --- | --- | --- |
 | Waterproof enclosure | TICONN IP67 ABS box, 10.2″ × 6.3″ × 3.9″, hinged lid, cable glands | ~$24 | [Amazon B0BND8Y3QN](https://www.amazon.com/dp/B0BND8Y3QN) |
 | Terminal blocks | 12-pc screw terminal strip set, 600 V / 15 A | ~$10 | [Amazon B09QHSLJJ3](https://www.amazon.com/dp/B09QHSLJJ3) |
+| 6-conductor wire | RESHAKE 22 AWG 6C tinned copper stranded wire, 16.4 ft — zone wiring between enclosures | ~$12 | [Amazon B0C7MKBFNK](https://www.amazon.com/dp/B0C7MKBFNK) |
+| Waterproof connector | HangTon SD13 6-pin IP68 male/female plug set — inter-enclosure quick-disconnect | ~$12 | [Amazon B0894SSPVX](https://www.amazon.com/dp/B0894SSPVX) |
 
 ### Plumbing
 
@@ -64,8 +66,8 @@ System uses 1/4″ OD push-to-connect tubing throughout. One solenoid valve per 
 
 | | Used | Available | % |
 | --- | --- | --- | --- |
-| RAM | 47 KB | 320 KB | 15% |
-| Flash | 800 KB | 3,264 KB | 25% |
+| RAM | 55 KB | 320 KB | 17% |
+| Flash | 822 KB | 3,264 KB | 25% |
 
 ## Setup
 
@@ -77,7 +79,7 @@ System uses 1/4″ OD push-to-connect tubing throughout. One solenoid valve per 
    const char* WIFI_PASS = "your_password";
    ```
 
-3. Connect the ESP32-S3 and put it in bootloader mode (hold BOOT, press RESET). It re-enumerates as COM4 in bootloader mode.
+3. Connect the ESP32-S3 via the **right USB-C port** (labeled USB on the board). This port uses native USB and handles bootloader mode automatically — no button pressing required for uploads or reboots. The left port (UART) requires holding BOOT then pressing RESET to enter download mode.
 4. Build and upload:
 
    ```text
@@ -89,14 +91,13 @@ System uses 1/4″ OD push-to-connect tubing throughout. One solenoid valve per 
 ## Web UI
 
 - **Zones** — collapsible cards showing zone name, status badge, and Run Now button. Expand to set per-program durations and rename the zone.
-- **Programs** — Morning and Afternoon schedules. Set time, days of week, and enable/disable per program.
+- **Programs** — Morning and Afternoon schedules. Set time and days of week; changes save automatically on input. Enable/disable per program.
 - **Run Now** — modal with 1 min / 10 min quick-select buttons or a custom duration entry. Queues the zone at the front of the run order. All other Run Now buttons disable while a zone is running or queued.
 - **All Off** — stops the active zone and clears the queue.
-- **Run Log** — modal showing watering history grouped by day and program, newest first.
-- **History API** — opens the `/history` JSON endpoint directly.
+- **Run Log** — button between Programs and the info bar; opens a modal showing watering history grouped by day and program, newest first.
 - **Chip temperature** — live ESP32 die temperature displayed in the bottom bar. Click to open a temperature history graph with **1 Day** (last 24 h) and **1 Week** (last 7 days) toggle buttons. Defaults to day view on open. Auto-refreshes every 60 seconds while open; switching views triggers a new fetch. The device records a sample every 10 minutes (up to 1 008 samples in RAM, reset on reboot).
 - **Uptime** — time since last boot, displayed in the bottom bar and updated every 15 seconds.
-- **Light / Dark mode** — toggle top-right, preference saved in localStorage.
+- **Theme** — 🎨 icon in the top bar cycles dark → light → color on each tap. Preference saved in localStorage.
 
 ## API Endpoints
 

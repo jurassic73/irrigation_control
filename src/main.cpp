@@ -502,12 +502,12 @@ body.color .tg-btn.active{background:#0ea5e9;border-color:#0ea5e9;color:#fff}
     <div class="modal-title" id="rn-title">Run Zone</div>
     <div class="dur-presets">
       <button class="dur-preset" onclick="rnPreset(1)">1 min</button>
-      <button class="dur-preset" onclick="rnPreset(10)">10 min</button>
+      <button class="dur-preset" onclick="rnPreset(5)">5 min</button>
       <button class="dur-preset" onclick="rnShowCustom()">Custom</button>
     </div>
     <div id="rn-custom" style="display:none">
       <label>Duration (minutes)</label>
-      <input type="number" id="rn-mins" min="1" max="480" value="10">
+      <input type="number" id="rn-mins" min="1" max="480" value="5">
       <div class="modal-btns" style="margin-bottom:.5rem">
         <button class="mbtn sbtn" onclick="rnConfirm()">Run</button>
       </div>
@@ -669,7 +669,7 @@ function runNow(i){
 function rnShowCustom(){
   document.getElementById('rn-custom').style.display='block';
   const el=document.getElementById('rn-mins');
-  el.value=zones[rnZone]?.durations[0]||10;
+  el.value=zones[rnZone]?.durations[0]||5;
   setTimeout(()=>{el.focus();el.select();},50);
 }
 async function rnRun(mins){
@@ -682,7 +682,7 @@ async function rnRun(mins){
 }
 async function rnPreset(mins){rnRun(mins);}
 function rnCancel(){document.getElementById('rn-modal').style.display='none';rnZone=-1;}
-async function rnConfirm(){rnRun(Math.max(1,parseInt(document.getElementById('rn-mins').value)||10));}
+async function rnConfirm(){rnRun(Math.max(1,parseInt(document.getElementById('rn-mins').value)||5));}
 
 async function allOff(){
   await fetch('/alloff');
