@@ -1,5 +1,9 @@
 # Irrigation Control
 
+![Finished installation — control enclosure (left) and 3D printed solenoid valve enclosure (right) mounted on exterior wall](pics/PXL_20260513_011222437.MP.jpg)
+
+![Build shot — control enclosure open (left), solenoid valve enclosure open (center), and 3D printed cover (right)](pics/PXL_20260511_151724342.jpg)
+
 ESP32-S3 based irrigation controller with a mobile-friendly web UI. Controls up to 5 zones via relay board, enforces single-zone water pressure constraint via a FIFO queue, and runs two daily watering programs (Morning / Afternoon).
 
 ## Hardware
@@ -20,6 +24,10 @@ ESP32-S3 based irrigation controller with a mobile-friendly web UI. Controls up 
 **Wiring note:** Use 5 V for relay board VCC (not 3.3 V). Disconnect USB-C before powering relays from 12 V supply.
 
 **Plumbing note:** Apply Teflon tape to all NPT threaded fittings before installing into solenoid valves. Finger-tight connections will leak.
+
+**Electronics enclosure note:** The TICONN box is waterproof and airtight, protecting all electronics from the elements. It hangs on a hook and connects via the AC cord and the 6-pin waterproof quick-disconnect, making it removable in seconds — if you need to bring it inside to update firmware, unplug both connections and take it in. Use the right USB-C port to flash code with no button pressing required.
+
+**Valve enclosure note:** All valve housing connectors exit as quick-disconnects outside the housing. If you need to remove the enclosure for service, everything unplugs cleanly without disturbing the internal wiring.
 
 ## Parts List
 
@@ -56,6 +64,22 @@ System uses 1/4″ OD push-to-connect tubing throughout. One solenoid valve per 
 | NPT male fittings | TAILONZ 1/4″ OD × 1/4″ NPT male straight, 10-pack | ~$11 | [Amazon B07PBPB367](https://www.amazon.com/dp/B07PBPB367) |
 | Elbow + straight combo | TAILONZ 1/4″ OD elbow + straight NPT, 12-pack | ~$12 | [Amazon B088NMKHQ5](https://www.amazon.com/dp/B088NMKHQ5) |
 | Ball valves | 1/4″ OD push-to-connect PVC ball valve, 5-pack | ~$10 | [Amazon B09N726LFW](https://www.amazon.com/dp/B09N726LFW) |
+
+## 3D Printed Parts
+
+The solenoid valve enclosure consists of a two-piece base and a cover, all printed in PETG. The cover uses 12 mm rare earth magnets for closure; super glue holds the magnets in their holes.
+
+| Part | Slicer parameters |
+| --- | --- |
+| Cover | 3 |
+| Base (×2 halves) | 4 |
+
+### Assembly
+
+1. **Base halves** — lightly tap the two halves together with a hammer until seated, then apply super glue along the seam to join permanently.
+2. **Hardware mounting** — use wood screws to mount all hardware. 5/8″ screws work well for most mounting points.
+
+> Pictures coming soon.
 
 ## Software
 
