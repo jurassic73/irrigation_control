@@ -40,7 +40,7 @@ Prices are approximate and subject to change.
 | ESP32-S3 dev board | ESP32-S3-WROOM-1, 2-pack | ~$16 | [Amazon B0FF3XC4RZ](https://www.amazon.com/dp/B0FF3XC4RZ) |
 | 5-ch relay board | 5V optocoupler relay, 12 V coils | ~$5 | [AliExpress](https://www.aliexpress.us/w/wholesale-5v-relay-board-optocoupler.html) |
 | Buck converter | 12 V → 5 V step-down (powers ESP32) | ~$3 | [AliExpress](https://www.aliexpress.us/w/wholesale-step-down-buck.html) |
-| 12 V power supply | Powers relay coils and solenoid valves | — | [Amazon B00MEKJ4E2](https://www.amazon.com/dp/B00MEKJ4E2) |
+| 12 V power supply | Powers relay coils and solenoid valves | ~$13 | [Amazon B00MEKJ4E2](https://www.amazon.com/dp/B00MEKJ4E2) |
 
 ### Enclosure & Wiring
 
