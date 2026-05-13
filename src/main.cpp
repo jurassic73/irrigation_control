@@ -145,6 +145,7 @@ void stopActive() {
   setRelay(activeZone, false);
   Serial.printf("Zone %d (%s) done after %us\n", activeZone, relayNames[activeZone], dur);
   activeZone = -1; activeEndTime = 0; activeStartTime = 0;
+  updateLED();
 }
 
 void allOffFn() {
@@ -271,7 +272,7 @@ h1{font-size:1.4rem;font-weight:600;color:#7dd3fc;letter-spacing:.05em;text-tran
 .sbtn{width:100%;background:#0369a1;color:#e0f2fe;border:none;border-radius:.3rem;padding:.35rem;font-size:.85rem;font-weight:600;cursor:pointer;letter-spacing:.04em;transition:background .15s}
 .sbtn:hover{background:#0284c7}
 .zone-grid{display:flex;flex-direction:column;gap:.75rem;width:100%;max-width:500px}
-.zcard{background:#1e293b;border-radius:.875rem;padding:.9rem 1rem;border:1px solid #475569;transition:border-color .2s}
+.zcard{background:#1e293b;border-radius:.875rem;padding:.9rem 1rem .5rem;border:1px solid #475569;transition:border-color .2s}
 .zcard.active{border-color:#22c55e}
 .zcard.queued{border-color:#f59e0b}
 .ztop{display:flex;align-items:center;gap:.5rem;margin-bottom:.7rem}
@@ -373,7 +374,7 @@ body.light .alloff:hover{background:#fff0f0;border-color:#f87171;color:#b91c1c}
 .rnbtn{background:#0f172a;color:#7dd3fc;border:1px solid #3b82f6;border-radius:.3rem;padding:.25rem .55rem;font-size:.85rem;font-weight:600;cursor:pointer;white-space:nowrap;transition:background .15s;flex-shrink:0}
 .rnbtn:hover:not(:disabled){background:#1e3a5f}
 .rnbtn:disabled{color:#334155;border-color:#1e293b;cursor:default}
-.xbtn{background:none;border:none;color:#64748b;cursor:pointer;font-size:1.5rem;padding:.05rem .25rem;line-height:1;flex-shrink:0;transition:color .15s}
+.xbtn{background:none;border:none;color:#64748b;cursor:pointer;font-size:2.25rem;padding:.05rem .25rem;line-height:1;flex-shrink:0;transition:color .15s}
 .xbtn:hover{color:#94a3b8}
 .zexpand{display:none;flex-direction:column;gap:.55rem;border-top:1px solid #475569;padding-top:.65rem;margin-top:.5rem}
 .zexpand.open{display:flex}

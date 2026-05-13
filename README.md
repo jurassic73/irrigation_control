@@ -19,6 +19,8 @@ ESP32-S3 based irrigation controller with a mobile-friendly web UI. Controls up 
 
 **Wiring note:** Use 5 V for relay board VCC (not 3.3 V). Disconnect USB-C before powering relays from 12 V supply.
 
+**Plumbing note:** Apply Teflon tape to all NPT threaded fittings before installing into solenoid valves. Finger-tight connections will leak.
+
 ## Parts List
 
 Prices are approximate and subject to change.
