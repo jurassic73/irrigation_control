@@ -67,9 +67,11 @@ System uses 1/4″ OD push-to-connect tubing throughout. One solenoid valve per 
 
 ## 3D Printed Parts
 
-The solenoid valve enclosure consists of a two-piece base and a cover, all printed in PETG. The cover uses 12 mm rare earth magnets for closure; super glue holds the magnets in their holes.
+The solenoid valve enclosure consists of three pieces: a two-piece base (two joined halves) and a separate cover. All three parts print in PETG — ASA warped too much to produce reliable, dimensionally accurate enclosures. The cover filament is Overture Space Gray PETG, available as a refill for older spools if needed. The cover uses 12 mm rare earth magnets for closure; super glue holds the magnets in their holes.
 
-| Part | Slicer parameters |
+The parts are intentionally designed as separate, individually replaceable pieces. If a single component breaks or needs modification, reprint that part rather than the entire assembly.
+
+| Part | Perimeters |
 | --- | --- |
 | Cover | 3 |
 | Base (×2 halves) | 4 |
