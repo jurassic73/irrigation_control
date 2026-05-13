@@ -85,7 +85,7 @@ The solenoid valve enclosure consists of a two-piece base and a cover, all print
 
 - Framework: Arduino via PlatformIO
 - Async HTTP server (ESPAsyncWebServer)
-- Config persisted in NVS (ESP32 Preferences)
+- Config persisted in NVS (ESP32 Preferences) — nonvolatile memory that survives firmware upgrades, so your zone names, schedules, and settings are safe when you flash new code
 - Embedded single-file HTML/CSS/JS UI served from PROGMEM
 
 ### Resource usage (current build)
@@ -115,6 +115,8 @@ The solenoid valve enclosure consists of a two-piece base and a cover, all print
 5. Open a browser to the ESP32's IP address (printed on serial at 115200 baud).
 
 ## Web UI
+
+The web UI runs directly on the ESP32 — no app, no cloud, no external server. Open a browser on any device on the same network and you're in. If your router supports VPN (such as WireGuard or OpenVPN), you can VPN into your home network from anywhere and access the controller as if you were home.
 
 - **Zones** — collapsible cards showing zone name, status badge, and Run Now button. Expand to set per-program durations and rename the zone.
 - **Programs** — Morning and Afternoon schedules. Set time and days of week; changes save automatically on input. Enable/disable per program.
