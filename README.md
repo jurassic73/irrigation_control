@@ -71,6 +71,8 @@ The solenoid valve enclosure consists of two pieces, a base and a cover. Both co
 
 The valve assembly parts are intentionally designed as separate, individually replaceable pieces.
 
+The STEP file (`stl/1_4_drip_irrigation_valve_housing.step`) ships with the repo so anyone can open and edit the design in their CAD tool of choice. Always room for improvement — adapt it to your setup and submit a PR.
+
 | Part              | Perimeters | Infill |
 | ----------------- | ---------- | ------ |
 | Cover             | 3          | 15%    |
