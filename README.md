@@ -29,6 +29,8 @@ ESP32-S3 based irrigation controller with a mobile-friendly web UI. Controls up 
 
 **Valve enclosure note:** All valve housing connectors exit as quick-disconnects outside the housing. If you need to remove the enclosure for service, everything unplugs cleanly without disturbing the internal wiring.
 
+**Chip temperature note:** On hot days the on-chip die temperature can read around 160 °F (71 °C). This is well within the ESP32-S3's maximum junction temperature spec of 125 °C (257 °F). At first glance 160 °F looks alarming, but it is normal and consistent with what other ESP32 users report when running inside an airtight enclosure exposed to direct sun.
+
 ## Parts List
 
 Prices are approximate and subject to change.
