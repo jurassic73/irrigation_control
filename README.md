@@ -86,6 +86,26 @@ The parts are segmented to fit the MK4s print bed. If you have a larger-format p
 1. **Base halves** — lightly tap the two halves together with a hammer until seated, then apply super glue along the seam to join permanently.
 2. **Hardware mounting** — use wood screws to mount all hardware. 5/8″ screws work well for most mounting points.
 
+## Commissioning Notes
+
+### NPT fitting leaks
+
+When I first pressurized the system I found leaks at three of the ten NPT fittings. Fix: depressurize the system, remove all five solenoids, and apply two full wraps of Teflon tape to every NPT fitting before reinstalling. Do them all at once rather than chasing leaks one at a time.
+
+### Solenoid valve body leak
+
+If water drips from the black valve body itself (not from a fitting), the internal o-ring needs reseating. To service:
+
+1. Depressurize the system.
+2. Remove the retaining nut — hand-tight, as it holds the solenoid coil on the cylinder but creates no seal. No torque needed.
+3. Remove the solenoid coil.
+4. Remove the two screws securing the end plate and pull the plate off.
+5. Pull the cylinder out of the valve body.
+6. Apply a thin coat of Super Lube synthetic silicone grease to the o-ring at the base of the cylinder.
+7. Press the cylinder back into the valve body. Once fully seated, rotate it left and right about 90° to help the greased o-ring seat evenly and form a good seal.
+8. Reinstall the end plate with the two screws.
+9. Reinstall the solenoid coil and thread the retaining nut hand-tight. The end plate and its two screws handle all sealing — the nut retains the coil, nothing more.
+
 ## Software
 
 - Framework: Arduino via PlatformIO
