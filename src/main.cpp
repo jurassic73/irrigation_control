@@ -553,9 +553,9 @@ body.color .tg-btn.active{background:#0ea5e9;border-color:#0ea5e9;color:#fff}
     <div id="rn-custom" style="display:none">
       <label>Duration</label>
       <div class="dur-row" style="margin-bottom:.9rem;justify-content:center;gap:.45rem">
-        <input type="number" id="rn-mins" min="0" max="480" value="5" style="max-width:3.5rem;font-size:1.1rem;padding:.4rem .5rem;text-align:center">
+        <input type="number" id="rn-mins" min="0" max="480" value="0" style="max-width:3.5rem;font-size:1.1rem;padding:.4rem .5rem;text-align:center">
         <span style="font-size:.75rem;color:#64748b">min</span>
-        <input type="number" id="rn-secs" min="0" max="59" value="0" style="max-width:3.5rem;font-size:1.1rem;padding:.4rem .5rem;text-align:center">
+        <input type="number" id="rn-secs" min="0" max="59" value="10" style="max-width:3.5rem;font-size:1.1rem;padding:.4rem .5rem;text-align:center">
         <span style="font-size:.75rem;color:#64748b">sec</span>
       </div>
       <div class="modal-btns" style="margin-bottom:.5rem">
@@ -723,10 +723,9 @@ function runNow(i){
 }
 function rnShowCustom(){
   document.getElementById('rn-custom').style.display='block';
-  const secs=zones[rnZone]?.durations[0]||300;
-  document.getElementById('rn-mins').value=Math.floor(secs/60);
-  document.getElementById('rn-secs').value=secs%60;
-  const el=document.getElementById('rn-mins');
+  document.getElementById('rn-mins').value=0;
+  document.getElementById('rn-secs').value=10;
+  const el=document.getElementById('rn-secs');
   setTimeout(()=>{el.focus();el.select();},50);
 }
 async function rnRun(secs){
