@@ -174,6 +174,7 @@ void allOffFn() {
 
 // ── Persistence ───────────────────────────────────────────────────────────────
 
+void saveConfig();
 void loadConfig() {
   prefs.begin("irr", true);
   for (int i = 0; i < NUM_ZONES; i++) {
@@ -194,7 +195,15 @@ void loadConfig() {
     snprintf(k, sizeof(k), "pw%d", pr); programs[pr].days    = prefs.getUChar(k,  programs[pr].days);
   }
   historyDays = prefs.getUChar("hdays", 7);
+  uint8_t cfgVer = prefs.getUChar("cfgVer", 0);
   prefs.end();
+  if (cfgVer < 2) {
+    for (int i = 0; i < NUM_ZONES; i++)
+      for (int pr = 0; pr < NUM_PROGRAMS; pr++)
+        if (zoneDuration[i][pr] > 0)
+          zoneDuration[i][pr] = (uint16_t)min((uint32_t)zoneDuration[i][pr] * 60, (uint32_t)65535);
+    saveConfig();
+  }
 }
 
 void saveConfig() {
@@ -215,6 +224,7 @@ void saveConfig() {
     snprintf(k, sizeof(k), "pw%d", pr); prefs.putUChar(k,  programs[pr].days);
   }
   prefs.putUChar("hdays", historyDays);
+  prefs.putUChar("cfgVer", 2);
   prefs.end();
 }
 
@@ -232,7 +242,7 @@ void checkSchedules() {
     progLastFired[pr] = now;
     int n = 0;
     for (int z = 0; z < NUM_ZONES; z++)
-      if (zoneDuration[z][pr] > 0) { enqueue(z, (uint32_t)zoneDuration[z][pr] * 60, pr + 1); n++; }
+      if (zoneDuration[z][pr] > 0) { enqueue(z, (uint32_t)zoneDuration[z][pr], pr + 1); n++; }
     Serial.printf("Program %d (%s): queued %d zones\n", pr, PROG_NAMES[pr], n);
   }
 }
@@ -315,15 +325,16 @@ h1{font-size:1.4rem;font-weight:600;color:#7dd3fc;letter-spacing:.05em;text-tran
 .ebtn:hover{color:#94a3b8}
 .zdurs{display:grid;grid-template-columns:1fr 1fr;gap:.5rem;margin-bottom:.4rem}
 .dfield{display:flex;flex-direction:column;gap:.2rem}
-.dlabel{font-size:.6rem;font-weight:600;letter-spacing:.07em;color:#94a3b8;text-transform:uppercase}
+.zdurs .dfield:first-child{border-right:1px solid #334155;padding-right:.5rem}
+.dlabel{font-size:.68rem;font-weight:600;letter-spacing:.07em;color:#e2e8f0;text-transform:uppercase}
 .dur-row{display:flex;align-items:center;gap:.3rem}
-.dur-row input{flex:1;min-width:0;background:#0f172a;border:1px solid #475569;border-radius:.3rem;color:#e2e8f0;padding:.28rem .4rem;font-size:.82rem;text-align:center}
+.dur-row input{width:calc(4ch + 30px);min-width:0;background:#0f172a;border:1px solid #475569;border-radius:.3rem;color:#f8fafc;padding:.28rem .4rem;font-size:.82rem;text-align:center}
 .dur-row input:focus{outline:none;border-color:#7dd3fc}
-.dur-row span{font-size:.65rem;color:#64748b;white-space:nowrap}
+.dur-row span{font-size:.75rem;font-weight:600;color:#e2e8f0;white-space:nowrap}
 .ep{display:none;flex-direction:column;gap:.45rem;border-top:1px solid #475569;padding-top:.65rem;margin-top:.4rem}
 .ep.open{display:flex}
-.ep label{font-size:.6rem;color:#94a3b8;letter-spacing:.07em;text-transform:uppercase;display:block;margin-bottom:.15rem}
-.ep input[type=text],.ep input[type=number]{background:#0f172a;border:1px solid #475569;border-radius:.3rem;color:#e2e8f0;padding:.3rem .45rem;font-size:.78rem;width:100%}
+.ep label{font-size:.68rem;font-weight:600;color:#e2e8f0;letter-spacing:.07em;text-transform:uppercase;display:block;margin-bottom:.15rem}
+.ep input[type=text],.ep input[type=number]{background:#0f172a;border:1px solid #475569;border-radius:.3rem;color:#f8fafc;padding:.3rem .45rem;font-size:.78rem;width:100%}
 .ep input:focus{outline:none;border-color:#7dd3fc}
 .footer{margin-top:1.25rem}
 .alloff{padding:.65rem 1.75rem;background:transparent;color:#f87171;border:1px solid #7f1d1d;border-radius:.5rem;font-size:.82rem;font-weight:600;letter-spacing:.05em;cursor:pointer;transition:background .15s,border-color .15s,color .15s}
@@ -342,7 +353,9 @@ body.light .zcard.active{border-color:#22c55e}
 body.light .zcard.queued{border-color:#f59e0b}
 body.light .pname{color:#0369a1}
 body.light .zname{color:#1e293b}
-body.light .dlabel,body.light .ebtn{color:#94a3b8}
+body.light .ebtn{color:#94a3b8}
+body.light .dlabel,body.light .ep label,body.light .dur-row span,body.light .ztog-label{color:#1e293b;font-weight:600}
+body.light .zdurs .dfield:first-child{border-color:#cbd5e1}
 body.light .ptog{background:#94a3b8}
 body.light .ztog{background:#94a3b8}
 body.light .ptime,body.light .dur-row input,body.light .ep input,body.light .modal input{background:#f8fafc;border-color:#94a3b8;color:#1e293b}
@@ -407,6 +420,7 @@ body.light .alloff:hover{background:#fff0f0;border-color:#f87171;color:#b91c1c}
 .zexpand{display:none;flex-direction:column;gap:.55rem;border-top:1px solid #475569;padding-top:.65rem;margin-top:.5rem}
 .zexpand.open{display:flex}
 .ztog-row{display:flex;align-items:center;gap:.6rem}
+.ztog-label{font-size:.79rem;font-weight:600;color:#e2e8f0;flex:1}
 .modal-ov{position:fixed;inset:0;background:rgba(0,0,0,.65);display:flex;align-items:center;justify-content:center;z-index:100}
 .modal{background:#1e293b;border-radius:.875rem;padding:1.25rem;border:1px solid #475569;width:260px;max-width:90vw}
 .modal-title{font-size:.88rem;font-weight:600;color:#7dd3fc;margin-bottom:.9rem}
@@ -447,7 +461,9 @@ body.color .zcard.active{border-color:#22c55e}
 body.color .zcard.queued{border-color:#f59e0b}
 body.color .pname{color:#fb923c}
 body.color .zname{color:#f5f5f5}
-body.color .dlabel,body.color .ebtn{color:#6b6b6b}
+body.color .ebtn{color:#6b6b6b}
+body.color .dlabel,body.color .ep label,body.color .dur-row span,body.color .ztog-label{color:#f5f5f5;font-weight:600}
+body.color .zdurs .dfield:first-child{border-color:#404040}
 body.color .ebtn:hover{color:#a3a3a3}
 body.color .ptime,body.color .dur-row input,body.color .ep input,body.color .modal input{background:#171717;border-color:#606060;color:#e5e5e5}
 body.color .ep,body.color .zexpand{border-color:#606060}
@@ -530,13 +546,18 @@ body.color .tg-btn.active{background:#0ea5e9;border-color:#0ea5e9;color:#fff}
   <div class="modal">
     <div class="modal-title" id="rn-title">Run Zone</div>
     <div class="dur-presets">
-      <button class="dur-preset" onclick="rnPreset(1)">1 min</button>
-      <button class="dur-preset" onclick="rnPreset(5)">5 min</button>
+      <button class="dur-preset" onclick="rnPreset(60)">1 min</button>
+      <button class="dur-preset" onclick="rnPreset(300)">5 min</button>
       <button class="dur-preset" onclick="rnShowCustom()">Custom</button>
     </div>
     <div id="rn-custom" style="display:none">
-      <label>Duration (minutes)</label>
-      <input type="number" id="rn-mins" min="1" max="480" value="5">
+      <label>Duration</label>
+      <div class="dur-row" style="margin-bottom:.9rem;justify-content:center;gap:.45rem">
+        <input type="number" id="rn-mins" min="0" max="480" value="5" style="max-width:3.5rem;font-size:1.1rem;padding:.4rem .5rem;text-align:center">
+        <span style="font-size:.75rem;color:#64748b">min</span>
+        <input type="number" id="rn-secs" min="0" max="59" value="0" style="max-width:3.5rem;font-size:1.1rem;padding:.4rem .5rem;text-align:center">
+        <span style="font-size:.75rem;color:#64748b">sec</span>
+      </div>
       <div class="modal-btns" style="margin-bottom:.5rem">
         <button class="mbtn sbtn" onclick="rnConfirm()">Run</button>
       </div>
@@ -605,7 +626,10 @@ function renderZones(){
     const isExp=expanded.has(i),epOpen=editing.has(i);
     const durs=programs.map((p,pr)=>
       '<div class="dfield"><div class="dlabel">'+esc(p.name)+'</div>'+
-      '<div class="dur-row"><input type="number" id="dur'+i+'_'+pr+'" value="'+z.durations[pr]+'" min="0" max="480" onchange="saveDur('+i+','+pr+')"><span>min</span></div></div>'
+      '<div class="dur-row">'+
+      '<input type="number" id="durM'+i+'_'+pr+'" value="'+Math.floor(z.durations[pr]/60)+'" min="0" max="480" onchange="saveDur('+i+','+pr+')"><span>min</span>'+
+      '<input type="number" id="durS'+i+'_'+pr+'" value="'+(z.durations[pr]%60)+'" min="0" max="59" onchange="saveDur('+i+','+pr+')"><span>sec</span>'+
+      '</div></div>'
     ).join('');
     const c=document.createElement('div');
     c.className='zcard '+st;
@@ -619,7 +643,7 @@ function renderZones(){
       '<div class="zexpand'+(isExp?' open':'')+'" id="zx'+i+'">'+
         '<div class="ztog-row">'+
           '<button class="ztog'+(isOn?' on':'')+'" onclick="toggleZone('+i+')"></button>'+
-          '<span style="font-size:.72rem;color:#64748b;flex:1">'+(isOn?'Turn off':'Turn on')+'</span>'+
+          '<span class="ztog-label">'+(isOn?'Turn off':'Turn on')+'</span>'+
           '<button class="ebtn" onclick="toggleEdit('+i+')" title="Configure">&#9881;</button>'+
         '</div>'+
         '<div class="zdurs">'+durs+'</div>'+
@@ -669,7 +693,9 @@ async function toggleZone(i){
 }
 
 async function saveDur(zi,pr){
-  const val=parseInt(document.getElementById('dur'+zi+'_'+pr).value)||0;
+  const m=parseInt(document.getElementById('durM'+zi+'_'+pr).value)||0;
+  const s=parseInt(document.getElementById('durS'+zi+'_'+pr).value)||0;
+  const val=m*60+s;
   zones[zi].durations[pr]=val;
   await fetch('/setzone?id='+zi+'&d'+pr+'='+val);
 }
@@ -697,21 +723,27 @@ function runNow(i){
 }
 function rnShowCustom(){
   document.getElementById('rn-custom').style.display='block';
+  const secs=zones[rnZone]?.durations[0]||300;
+  document.getElementById('rn-mins').value=Math.floor(secs/60);
+  document.getElementById('rn-secs').value=secs%60;
   const el=document.getElementById('rn-mins');
-  el.value=zones[rnZone]?.durations[0]||5;
   setTimeout(()=>{el.focus();el.select();},50);
 }
-async function rnRun(mins){
+async function rnRun(secs){
   document.getElementById('rn-modal').style.display='none';
-  await fetch('/relay?id='+rnZone+'&state=1&mins='+mins);
+  await fetch('/relay?id='+rnZone+'&state=1&secs='+secs);
   queued=[...queued,rnZone];
   rnZone=-1;
   render();
   schedFetch();
 }
-async function rnPreset(mins){rnRun(mins);}
+async function rnPreset(secs){rnRun(secs);}
 function rnCancel(){document.getElementById('rn-modal').style.display='none';rnZone=-1;}
-async function rnConfirm(){rnRun(Math.max(1,parseInt(document.getElementById('rn-mins').value)||5));}
+async function rnConfirm(){
+  const m=parseInt(document.getElementById('rn-mins').value)||0;
+  const s=parseInt(document.getElementById('rn-secs').value)||0;
+  rnRun(Math.max(1,m*60+s));
+}
 
 async function allOff(){
   await fetch('/alloff');
@@ -1007,10 +1039,10 @@ void setup() {
       if (idx >= 0 && idx < NUM_ZONES) {
         if (on) {
           uint32_t secs;
-          if (req->hasParam("mins"))
-            secs = (uint32_t)constrain(req->getParam("mins")->value().toInt(), 1, 480) * 60;
+          if (req->hasParam("secs"))
+            secs = (uint32_t)constrain(req->getParam("secs")->value().toInt(), 1, 28800);
           else
-            secs = zoneDuration[idx][0] > 0 ? (uint32_t)zoneDuration[idx][0] * 60 : 300;
+            secs = zoneDuration[idx][0] > 0 ? (uint32_t)zoneDuration[idx][0] : 300;
           enqueue(idx, secs);
           Serial.printf("Manual: Zone %d queued for %lus\n", idx, (unsigned long)secs);
         } else {
