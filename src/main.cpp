@@ -40,6 +40,10 @@ time_t  activeEndTime   = 0;
 time_t  activeStartTime = 0;
 uint8_t activeTrigger   = 0;
 
+// ESPAsyncWebServer callbacks run on Core 0; loop() runs on Core 1.
+// stateMux guards all shared queue and active-zone state between the two tasks.
+static portMUX_TYPE stateMux = portMUX_INITIALIZER_UNLOCKED;
+
 #define HISTORY_MAX 200
 struct HistoryEntry { time_t start; uint16_t duration; uint8_t zone; uint8_t trigger; };
 HistoryEntry history[HISTORY_MAX];
@@ -67,21 +71,27 @@ void addTempSample(time_t t, float c) {
 // ── Queue ─────────────────────────────────────────────────────────────────────
 
 void enqueue(uint8_t z, uint32_t secs, uint8_t trigger = 0) {
-  if (qSize >= QUEUE_MAX) return;
-  qBuf[(qHead + qSize) % QUEUE_MAX] = {z, secs, trigger};
-  qSize++;
+  portENTER_CRITICAL(&stateMux);
+  if (qSize < QUEUE_MAX)
+    qBuf[(qHead + qSize++) % QUEUE_MAX] = {z, secs, trigger};
+  portEXIT_CRITICAL(&stateMux);
 }
 
-QEntry dequeue() {
+QEntry dequeue() {  // must be called while holding stateMux
   QEntry e = qBuf[qHead];
   qHead = (qHead + 1) % QUEUE_MAX;
   qSize--;
   return e;
 }
 
-void clearQueue() { qSize = 0; }
+void clearQueue() {
+  portENTER_CRITICAL(&stateMux);
+  qSize = 0;
+  portEXIT_CRITICAL(&stateMux);
+}
 
 void removeFromQueue(int z) {
+  portENTER_CRITICAL(&stateMux);
   QEntry tmp[QUEUE_MAX]; int n = 0;
   for (int i = 0; i < qSize; i++) {
     QEntry e = qBuf[(qHead + i) % QUEUE_MAX];
@@ -89,6 +99,7 @@ void removeFromQueue(int z) {
   }
   qHead = 0; qSize = n;
   memcpy(qBuf, tmp, n * sizeof(QEntry));
+  portEXIT_CRITICAL(&stateMux);
 }
 
 // ── LED ───────────────────────────────────────────────────────────────────────
@@ -137,15 +148,23 @@ void addHistory(HistoryEntry e) {
   }
 }
 
-void stopActive() {
-  if (activeZone < 0) return;
+// requireZone >= 0 stops only if that zone is currently active; -1 stops whatever is active.
+void stopActive(int requireZone = -1) {
+  portENTER_CRITICAL(&stateMux);
+  if (activeZone < 0 || (requireZone >= 0 && activeZone != requireZone)) {
+    portEXIT_CRITICAL(&stateMux);
+    return;
+  }
   time_t now; time(&now);
-  uint16_t dur = (uint16_t)min((long)(now - activeStartTime), 65535L);
-  addHistory({activeStartTime, dur, (uint8_t)activeZone, activeTrigger});
-  setRelay(activeZone, false);
-  Serial.printf("Zone %d (%s) done after %us\n", activeZone, relayNames[activeZone], dur);
+  uint16_t dur   = (uint16_t)min((long)(now - activeStartTime), 65535L);
+  int8_t   zone  = activeZone;
+  uint8_t  trig  = activeTrigger;
+  time_t   start = activeStartTime;
   activeZone = -1; activeEndTime = 0; activeStartTime = 0;
-  updateLED();
+  portEXIT_CRITICAL(&stateMux);
+  addHistory({start, dur, (uint8_t)zone, trig});
+  setRelay(zone, false);
+  Serial.printf("Zone %d (%s) done after %us\n", zone, relayNames[zone], dur);
 }
 
 void allOffFn() {
@@ -220,13 +239,22 @@ void checkSchedules() {
 
 void runQueue() {
   time_t now; time(&now);
-  if (activeZone >= 0 && now >= activeEndTime) stopActive();
+
+  portENTER_CRITICAL(&stateMux);
+  bool needStop = (activeZone >= 0 && now >= activeEndTime);
+  portEXIT_CRITICAL(&stateMux);
+  if (needStop) stopActive();
+
+  portENTER_CRITICAL(&stateMux);
   if (activeZone < 0 && qSize > 0) {
     QEntry e = dequeue();
     activeZone = e.zone; activeEndTime = now + e.secs;
     activeStartTime = now; activeTrigger = e.trigger;
-    setRelay(activeZone, true);
-    Serial.printf("Queue: Zone %d (%s) ON for %lus\n", activeZone, relayNames[activeZone], (unsigned long)e.secs);
+    portEXIT_CRITICAL(&stateMux);
+    setRelay(e.zone, true);
+    Serial.printf("Queue: Zone %d (%s) ON for %lus\n", e.zone, relayNames[e.zone], (unsigned long)e.secs);
+  } else {
+    portEXIT_CRITICAL(&stateMux);
   }
 }
 
@@ -986,7 +1014,7 @@ void setup() {
           enqueue(idx, secs);
           Serial.printf("Manual: Zone %d queued for %lus\n", idx, (unsigned long)secs);
         } else {
-          if (activeZone == idx) stopActive();
+          stopActive(idx);
           removeFromQueue(idx);
           Serial.printf("Manual: Zone %d stopped/removed\n", idx);
         }
