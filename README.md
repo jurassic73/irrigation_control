@@ -146,23 +146,23 @@ The web UI runs directly on the ESP32 — no app, no cloud, no external server. 
 
 Each zone appears as a card showing its name, active status, and a **Run Now** button. When a zone has a duration configured for a program, a colored pill label shows the program name and duration at a glance. Below the pill labels, a row of day buttons shows which days that zone participates in that program — blue for Morning, violet for Afternoon. Day buttons are read-only when collapsed.
 
-![Zone list — collapsed view showing pill labels and day-of-week indicators](pics/zones_overview.jpg)
+> <img src="pics/zones_overview.jpg" alt="Zone list — collapsed view showing pill labels and day-of-week indicators" width="288">
 
 Tap the arrow to expand a zone. The day buttons become interactive so you can toggle individual days per program. The duration inputs let you set minutes and seconds independently for Morning and Afternoon.
 
-![Zone expanded — duration inputs and interactive day toggles](pics/zone_expanded.jpg)
+> <img src="pics/zone_expanded.jpg" alt="Zone expanded — duration inputs and interactive day toggles" width="288">
 
 Tap the gear icon inside an expanded zone to open the configuration panel where you can rename the zone and change its GPIO pin.
 
-![Zone expanded — name and GPIO pin configuration](pics/zone_config.jpg)
+> <img src="pics/zone_config.jpg" alt="Zone expanded — name and GPIO pin configuration" width="288">
 
 ### Run Now
 
 Tap **Run Now** on any zone to open the run dialog. Choose **1 min** or **5 min** for a quick soak, or tap **Custom** to dial in an exact duration.
 
-![Run Now — quick-select presets](pics/run_now.jpg)
+> <img src="pics/run_now.jpg" alt="Run Now — quick-select presets" width="288">
 
-![Run Now — custom duration entry](pics/run_now_custom.jpg)
+> <img src="pics/run_now_custom.jpg" alt="Run Now — custom duration entry" width="288">
 
 The zone is queued immediately. All other Run Now buttons disable while any zone is running or queued to prevent pressure conflicts. Use **All Off** to stop the active zone and clear the queue instantly.
 
@@ -170,7 +170,7 @@ The zone is queued immediately. All other Run Now buttons disable while any zone
 
 Two watering programs — Morning and Afternoon — each have an independent time, day-of-week mask, and enable toggle. Changes save to flash automatically when you interact with any control.
 
-![Programs — Morning enabled at 4:30 AM daily, Afternoon disabled](pics/programs.jpg)
+> <img src="pics/programs.jpg" alt="Programs — Morning enabled at 4:30 AM daily, Afternoon disabled" width="288">
 
 Each zone independently opts in or out of a program on a per-day basis using the day toggles on the zone card. A zone only waters when **both** the program's day mask **and** the zone's own day mask include that day of the week. This lets you run some zones every day while others water only on certain days, all within the same program schedule.
 
