@@ -39,18 +39,18 @@ Prices are approximate and subject to change.
 
 | Image                                                                       | Part               | Description                            | ~Price | Link                                                                             |
 | --------------------------------------------------------------------------- | ------------------ | -------------------------------------- | ------ | -------------------------------------------------------------------------------- |
-| <img src="pics/bom/relay_board.jpg" alt="5-ch relay board" width="80">  | 5-ch relay board   | 5V optocoupler relay, 12 V coils       | ~$5    | [AliExpress](https://www.aliexpress.us/w/wholesale-5v-relay-board-optocoupler.html) |
-| <img src="pics/bom/psu_12v.jpg" alt="12V power supply" width="80">      | 12 V power supply  | Powers relay coils and solenoid valves | ~$13   | [Amazon B00MEKJ4E2](https://www.amazon.com/dp/B00MEKJ4E2)                           |
 | <img src="pics/bom/esp32.jpg" alt="ESP32-S3 dev board" width="80">      | ESP32-S3 dev board | ESP32-S3-WROOM-1, 2-pack               | ~$16   | [Amazon B0FF3XC4RZ](https://www.amazon.com/dp/B0FF3XC4RZ)                           |
+| <img src="pics/bom/psu_12v.jpg" alt="12V power supply" width="80">      | 12 V power supply  | Powers relay coils and solenoid valves | ~$13   | [Amazon B00MEKJ4E2](https://www.amazon.com/dp/B00MEKJ4E2)                           |
+| <img src="pics/bom/relay_board.jpg" alt="5-ch relay board" width="80">  | 5-ch relay board   | 5V optocoupler relay, 12 V coils       | ~$5    | [AliExpress](https://www.aliexpress.us/w/wholesale-5v-relay-board-optocoupler.html) |
 | <img src="pics/bom/buck_converter.jpg" alt="Buck converter" width="80"> | Buck converter     | 12 V → 5 V step-down (powers ESP32)   | ~$3    | [AliExpress](https://www.aliexpress.us/w/wholesale-step-down-buck.html)             |
 
 ### Enclosure & Wiring
 
 | Image                                                                                   | Part                 | Description                                                                              | ~Price | Link                                                   |
 | --------------------------------------------------------------------------------------- | -------------------- | ---------------------------------------------------------------------------------------- | ------ | ------------------------------------------------------ |
-| <img src="pics/bom/connector_waterproof.jpg" alt="Waterproof connector" width="80"> | Waterproof connector | HangTon SD13 6-pin IP68 male/female plug set — inter-enclosure quick-disconnect         | ~$12   | [Amazon B0894SSPVX](https://www.amazon.com/dp/B0894SSPVX) |
-| <img src="pics/bom/wire_6c.jpg" alt="6-conductor wire" width="80">                  | 6-conductor wire     | RESHAKE 22 AWG 6C tinned copper stranded wire, 16.4 ft — zone wiring between enclosures | ~$12   | [Amazon B0C7MKBFNK](https://www.amazon.com/dp/B0C7MKBFNK) |
 | <img src="pics/bom/enclosure.jpg" alt="Waterproof enclosure" width="80">            | Waterproof enclosure | TICONN IP67 ABS box, 10.2″ × 6.3″ × 3.9″, hinged lid, cable glands                  | ~$24   | [Amazon B0BND8Y3QN](https://www.amazon.com/dp/B0BND8Y3QN) |
+| <img src="pics/bom/wire_6c.jpg" alt="6-conductor wire" width="80">                  | 6-conductor wire     | RESHAKE 22 AWG 6C tinned copper stranded wire, 16.4 ft — zone wiring between enclosures | ~$12   | [Amazon B0C7MKBFNK](https://www.amazon.com/dp/B0C7MKBFNK) |
+| <img src="pics/bom/connector_waterproof.jpg" alt="Waterproof connector" width="80"> | Waterproof connector | HangTon SD13 6-pin IP68 male/female plug set — inter-enclosure quick-disconnect         | ~$12   | [Amazon B0894SSPVX](https://www.amazon.com/dp/B0894SSPVX) |
 | <img src="pics/bom/terminal_blocks.jpg" alt="Terminal blocks" width="80">           | Terminal blocks      | 12-pc screw terminal strip set, 600 V / 15 A                                             | ~$10   | [Amazon B09QHSLJJ3](https://www.amazon.com/dp/B09QHSLJJ3) |
 
 ### Plumbing
