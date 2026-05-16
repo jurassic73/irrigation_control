@@ -59,6 +59,7 @@ System uses 1/4″ OD push-to-connect tubing throughout. One solenoid valve per 
 
 | Image | Part                   | Description                                                             | ~Price    | Link                                                   |
 | ----- | ---------------------- | ----------------------------------------------------------------------- | --------- | ------------------------------------------------------ |
+| <img src="pics/bom/teflon_tape.jpg" alt="Teflon tape" width="80"> | Teflon tape            | PTFE thread seal tape, 1/2″ wide, 4-pack — for all NPT fittings        | ~$5       | [Amazon B091913Z7F](https://www.amazon.com/dp/B091913Z7F) |
 | <img src="pics/bom/solenoid_valve.jpg" alt="Solenoid valve" width="80"> | Solenoid valve         | 12 V DC NC, 1/4″ NPT — one per zone                                   | ~$13 each | [Amazon B07N2LGFYS](https://www.amazon.com/dp/B07N2LGFYS) |
 | <img src="pics/bom/hose_bib_adapter.jpg" alt="Hose bib adapter" width="80"> | Hose bib adapter       | HOMENOTE 3/4″ female hose thread → 1/4″ tubing, 2-pack               | ~$9       | [Amazon B089ZZPXLQ](https://www.amazon.com/dp/B089ZZPXLQ) |
 | <img src="pics/bom/fittings_kit.jpg" alt="Fittings kit" width="80"> | Fittings kit           | TAILONZ 40-pc 1/4″ OD assortment — tees, elbows, straights, splitters | ~$14      | [Amazon B07RSLDDBR](https://www.amazon.com/dp/B07RSLDDBR) |
