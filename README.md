@@ -1,4 +1,4 @@
-# Irrigation Control
+﻿# Irrigation Control
 
 ![Finished installation — control enclosure (left) and 3D printed solenoid valve enclosure (right) mounted on exterior wall](pics/PXL_20260513_011222437.MP.jpg)
 
@@ -37,37 +37,35 @@ Prices are approximate and subject to change.
 
 ### Electronics
 
-| Part               | Description                            | ~Price | Link                                                                             |
-| ------------------ | -------------------------------------- | ------ | -------------------------------------------------------------------------------- |
-| ESP32-S3 dev board | ESP32-S3-WROOM-1, 2-pack               | ~$16   | [Amazon B0FF3XC4RZ](https://www.amazon.com/dp/B0FF3XC4RZ)                           |
-| 5-ch relay board   | 5V optocoupler relay, 12 V coils       | ~$5    | [AliExpress](https://www.aliexpress.us/w/wholesale-5v-relay-board-optocoupler.html) |
-| Buck converter     | 12 V → 5 V step-down (powers ESP32)   | ~$3    | [AliExpress](https://www.aliexpress.us/w/wholesale-step-down-buck.html)             |
-| 12 V power supply  | Powers relay coils and solenoid valves | ~$13   | [Amazon B00MEKJ4E2](https://www.amazon.com/dp/B00MEKJ4E2)                           |
+| Image | Part               | Description                            | ~Price | Link                                                                             |
+| ----- | ------------------ | -------------------------------------- | ------ | -------------------------------------------------------------------------------- |
+| <img src="pics/bom/esp32.jpg" alt="ESP32-S3 dev board" width="80"> | ESP32-S3 dev board | ESP32-S3-WROOM-1, 2-pack               | ~$16   | [Amazon B0FF3XC4RZ](https://www.amazon.com/dp/B0FF3XC4RZ)                           |
+| <img src="pics/bom/relay_board.jpg" alt="5-ch relay board" width="80"> | 5-ch relay board   | 5V optocoupler relay, 12 V coils       | ~$5    | [AliExpress](https://www.aliexpress.us/w/wholesale-5v-relay-board-optocoupler.html) |
+| <img src="pics/bom/buck_converter.jpg" alt="Buck converter" width="80"> | Buck converter     | 12 V → 5 V step-down (powers ESP32)   | ~$3    | [AliExpress](https://www.aliexpress.us/w/wholesale-step-down-buck.html)             |
+| <img src="pics/bom/psu_12v.jpg" alt="12V power supply" width="80"> | 12 V power supply  | Powers relay coils and solenoid valves | ~$13   | [Amazon B00MEKJ4E2](https://www.amazon.com/dp/B00MEKJ4E2)                           |
 
 ### Enclosure & Wiring
 
-| Part                 | Description                                                                              | ~Price | Link                                                   |
-| -------------------- | ---------------------------------------------------------------------------------------- | ------ | ------------------------------------------------------ |
-| Waterproof enclosure | TICONN IP67 ABS box, 10.2″ × 6.3″ × 3.9″, hinged lid, cable glands                  | ~$24   | [Amazon B0BND8Y3QN](https://www.amazon.com/dp/B0BND8Y3QN) |
-| Terminal blocks      | 12-pc screw terminal strip set, 600 V / 15 A                                             | ~$10   | [Amazon B09QHSLJJ3](https://www.amazon.com/dp/B09QHSLJJ3) |
-| 6-conductor wire     | RESHAKE 22 AWG 6C tinned copper stranded wire, 16.4 ft — zone wiring between enclosures | ~$12   | [Amazon B0C7MKBFNK](https://www.amazon.com/dp/B0C7MKBFNK) |
-| Waterproof connector | HangTon SD13 6-pin IP68 male/female plug set — inter-enclosure quick-disconnect         | ~$12   | [Amazon B0894SSPVX](https://www.amazon.com/dp/B0894SSPVX) |
+| Image | Part                 | Description                                                                              | ~Price | Link                                                   |
+| ----- | -------------------- | ---------------------------------------------------------------------------------------- | ------ | ------------------------------------------------------ |
+| <img src="pics/bom/enclosure.jpg" alt="Waterproof enclosure" width="80"> | Waterproof enclosure | TICONN IP67 ABS box, 10.2″ × 6.3″ × 3.9″, hinged lid, cable glands                  | ~$24   | [Amazon B0BND8Y3QN](https://www.amazon.com/dp/B0BND8Y3QN) |
+| <img src="pics/bom/terminal_blocks.jpg" alt="Terminal blocks" width="80"> | Terminal blocks      | 12-pc screw terminal strip set, 600 V / 15 A                                             | ~$10   | [Amazon B09QHSLJJ3](https://www.amazon.com/dp/B09QHSLJJ3) |
+| <img src="pics/bom/wire_6c.jpg" alt="6-conductor wire" width="80"> | 6-conductor wire     | RESHAKE 22 AWG 6C tinned copper stranded wire, 16.4 ft — zone wiring between enclosures | ~$12   | [Amazon B0C7MKBFNK](https://www.amazon.com/dp/B0C7MKBFNK) |
+| <img src="pics/bom/connector_waterproof.jpg" alt="Waterproof connector" width="80"> | Waterproof connector | HangTon SD13 6-pin IP68 male/female plug set — inter-enclosure quick-disconnect         | ~$12   | [Amazon B0894SSPVX](https://www.amazon.com/dp/B0894SSPVX) |
 
 ### Plumbing
 
 System uses 1/4″ OD push-to-connect tubing throughout. One solenoid valve per zone.
 
-| Part                   | Description                                                             | ~Price    | Link                                                   |
-| ---------------------- | ----------------------------------------------------------------------- | --------- | ------------------------------------------------------ |
-| Solenoid valve         | 12 V DC NC, 1/4″ NPT — one per zone                                   | ~$13 each | [Amazon B07N2LGFYS](https://www.amazon.com/dp/B07N2LGFYS) |
-| Hose bib adapter       | HOMENOTE 3/4″ female hose thread → 1/4″ tubing, 2-pack               | ~$9       | [Amazon B089ZZPXLQ](https://www.amazon.com/dp/B089ZZPXLQ) |
-| Fittings kit           | TAILONZ 40-pc 1/4″ OD assortment — tees, elbows, straights, splitters | ~$14      | [Amazon B07RSLDDBR](https://www.amazon.com/dp/B07RSLDDBR) |
-| Straight connectors    | TAILONZ 1/4″ OD push-to-connect, 5-pack                                | ~$9       | [Amazon B07SXRL8YR](https://www.amazon.com/dp/B07SXRL8YR) |
-| NPT male fittings      | TAILONZ 1/4″ OD × 1/4″ NPT male straight, 10-pack                    | ~$11      | [Amazon B07PBPB367](https://www.amazon.com/dp/B07PBPB367) |
-| Elbow + straight combo | TAILONZ 1/4″ OD elbow + straight NPT, 12-pack                          | ~$12      | [Amazon B088NMKHQ5](https://www.amazon.com/dp/B088NMKHQ5) |
-| Ball valves            | 1/4″ OD push-to-connect PVC ball valve, 5-pack                         | ~$10      | [Amazon B09N726LFW](https://www.amazon.com/dp/B09N726LFW) |
-| Pressure regulator     | 25 psi, 3/4″ hose thread, lead-free brass — protects drip system       | ~$13      | [Amazon B0B1M42TVG](https://www.amazon.com/dp/B0B1M42TVG) |
-| Supply tubing          | Raindrip 1/4″ OD black poly, 100 ft — smooth outer layer for push-to-connect compatibility | ~$10 | [Amazon B0007WJIJU0](https://www.amazon.com/dp/B0007WJIJU0) |
+| Image | Part                   | Description                                                             | ~Price    | Link                                                   |
+| ----- | ---------------------- | ----------------------------------------------------------------------- | --------- | ------------------------------------------------------ |
+| <img src="pics/bom/solenoid_valve.jpg" alt="Solenoid valve" width="80"> | Solenoid valve         | 12 V DC NC, 1/4″ NPT — one per zone                                   | ~$13 each | [Amazon B07N2LGFYS](https://www.amazon.com/dp/B07N2LGFYS) |
+| <img src="pics/bom/hose_bib_adapter.jpg" alt="Hose bib adapter" width="80"> | Hose bib adapter       | HOMENOTE 3/4″ female hose thread → 1/4″ tubing, 2-pack               | ~$9       | [Amazon B089ZZPXLQ](https://www.amazon.com/dp/B089ZZPXLQ) |
+| <img src="pics/bom/fittings_kit.jpg" alt="Fittings kit" width="80"> | Fittings kit           | TAILONZ 40-pc 1/4″ OD assortment — tees, elbows, straights, splitters | ~$14      | [Amazon B07RSLDDBR](https://www.amazon.com/dp/B07RSLDDBR) |
+| <img src="pics/bom/straight_connectors.jpg" alt="Straight connectors" width="80"> | Straight connectors    | TAILONZ 1/4″ OD push-to-connect, 5-pack                                | ~$9       | [Amazon B07SXRL8YR](https://www.amazon.com/dp/B07SXRL8YR) |
+| <img src="pics/bom/npt_fittings.jpg" alt="NPT male fittings" width="80"> | NPT male fittings      | TAILONZ 1/4″ OD × 1/4″ NPT male straight, 10-pack                    | ~$11      | [Amazon B07PBPB367](https://www.amazon.com/dp/B07PBPB367) |
+| <img src="pics/bom/pressure_regulator.jpg" alt="Pressure regulator" width="80"> | Pressure regulator     | 25 psi, 3/4″ hose thread, lead-free brass — protects drip system       | ~$13      | [Amazon B0B1M42TVG](https://www.amazon.com/dp/B0B1M42TVG) |
+| <img src="pics/bom/supply_tubing.jpg" alt="Supply tubing" width="80"> | Supply tubing          | Raindrip 1/4″ OD black poly, 100 ft — smooth outer layer for push-to-connect compatibility | ~$10 | [Amazon B0007WJIJU](https://www.amazon.com/dp/B0007WJIJU) |
 
 ## 3D Printed Parts
 
