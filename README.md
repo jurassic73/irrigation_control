@@ -142,14 +142,45 @@ If water drips from the black valve body itself (not from a fitting), the intern
 
 The web UI runs directly on the ESP32 — no app, no cloud, no external server. Open a browser on any device on the same network and you're in. If your router supports VPN (such as WireGuard or OpenVPN), you can VPN into your home network from anywhere and access the controller as if you were home.
 
-- **Zones** — collapsible cards showing zone name, status badge, and Run Now button. Expand to set per-program durations and rename the zone.
-- **Programs** — Morning and Afternoon schedules. Set time and days of week; changes save automatically on input. Enable/disable per program.
-- **Run Now** — modal with 1 min / 10 min quick-select buttons or a custom duration entry. Queues the zone at the front of the run order. All other Run Now buttons disable while a zone is running or queued.
-- **All Off** — stops the active zone and clears the queue.
-- **Run Log** — button between Programs and the info bar; opens a modal showing watering history grouped by day and program, newest first.
-- **Chip temperature** — live ESP32 die temperature displayed in the bottom bar. Click to open a temperature history graph with **1 Day** (last 24 h) and **1 Week** (last 7 days) toggle buttons. Defaults to day view on open. Auto-refreshes every 60 seconds while open; switching views triggers a new fetch. The device records a sample every 10 minutes (up to 1 008 samples in RAM, reset on reboot).
-- **Uptime** — time since last boot, displayed in the bottom bar and updated every 15 seconds.
-- **Theme** — 🎨 icon in the top bar cycles dark → light → color on each tap. Preference saved in localStorage.
+### Zones
+
+Each zone appears as a card showing its name, active status, and a **Run Now** button. When a zone has a duration configured for a program, a colored pill label shows the program name and duration at a glance. Below the pill labels, a row of day buttons shows which days that zone participates in that program — blue for Morning, violet for Afternoon. Day buttons are read-only when collapsed.
+
+![Zone list — collapsed view showing pill labels and day-of-week indicators](pics/zones_overview.jpg)
+
+Tap the arrow to expand a zone. The day buttons become interactive so you can toggle individual days per program. The duration inputs let you set minutes and seconds independently for Morning and Afternoon.
+
+![Zone expanded — duration inputs and interactive day toggles](pics/zone_expanded.jpg)
+
+Tap the gear icon inside an expanded zone to open the configuration panel where you can rename the zone and change its GPIO pin.
+
+![Zone expanded — name and GPIO pin configuration](pics/zone_config.jpg)
+
+### Run Now
+
+Tap **Run Now** on any zone to open the run dialog. Choose **1 min** or **5 min** for a quick soak, or tap **Custom** to dial in an exact duration.
+
+![Run Now — quick-select presets](pics/run_now.jpg)
+
+![Run Now — custom duration entry](pics/run_now_custom.jpg)
+
+The zone is queued immediately. All other Run Now buttons disable while any zone is running or queued to prevent pressure conflicts. Use **All Off** to stop the active zone and clear the queue instantly.
+
+### Programs
+
+Two watering programs — Morning and Afternoon — each have an independent time, day-of-week mask, and enable toggle. Changes save to flash automatically when you interact with any control.
+
+![Programs — Morning enabled at 4:30 AM daily, Afternoon disabled](pics/programs.jpg)
+
+Each zone independently opts in or out of a program on a per-day basis using the day toggles on the zone card. A zone only waters when **both** the program's day mask **and** the zone's own day mask include that day of the week. This lets you run some zones every day while others water only on certain days, all within the same program schedule.
+
+### Additional features
+
+- **All Off** — stops the active zone and clears the entire queue.
+- **Run Log** — opens a modal showing watering history grouped by day and program, newest first.
+- **Chip temperature** — live ESP32 die temperature in the bottom bar. Tap to open a history graph with **1 Day** and **1 Week** views. Auto-refreshes every 60 seconds while open. Samples recorded every 10 minutes (up to 1,008 in RAM, resets on reboot).
+- **Uptime** — time since last boot, updated every 15 seconds.
+- **Theme** — 🎨 icon cycles dark → light → color. Preference saved in localStorage.
 
 ## API Endpoints
 
