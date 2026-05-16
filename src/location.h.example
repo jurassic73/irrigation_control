@@ -1,0 +1,3 @@
+#pragma once
+#define WEATHER_LAT  0.000   // your latitude  (e.g. 45.633)
+#define WEATHER_LON  0.000   // your longitude (e.g. -122.490)

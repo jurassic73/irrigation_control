@@ -5,7 +5,11 @@
 #include <Preferences.h>
 #include <time.h>
 #include <Adafruit_NeoPixel.h>
+#include <HTTPClient.h>
+#include <WiFiClientSecure.h>
+#include <ArduinoJson.h>
 #include "secrets.h"
+#include "location.h"
 
 #define LED_PIN      48
 #define LED_COUNT     1
@@ -56,6 +60,11 @@ struct TempSample { time_t t; float c; };
 TempSample tempHist[TEMP_HIST_MAX];
 int tempHistHead = 0, tempHistCount = 0;
 unsigned long lastTempSample = 0;
+
+uint8_t coolDayPct    = 50;   // % to water on cool/overcast days (persisted)
+uint8_t weatherScale  = 100;  // active scale factor — RAM only, resets to 100 on reboot
+bool    weatherFetchOk = false;
+time_t  lastWeatherFetch = 0;
 
 Preferences    prefs;
 AsyncWebServer server(80);
@@ -198,6 +207,7 @@ void loadConfig() {
     snprintf(k, sizeof(k), "pw%d", pr); programs[pr].days    = prefs.getUChar(k,  programs[pr].days);
   }
   historyDays = prefs.getUChar("hdays", 7);
+  coolDayPct  = prefs.getUChar("wPct",  50);
   uint8_t cfgVer = prefs.getUChar("cfgVer", 0);
   prefs.end();
   if (cfgVer < 2) {
@@ -228,8 +238,36 @@ void saveConfig() {
     snprintf(k, sizeof(k), "pw%d", pr); prefs.putUChar(k,  programs[pr].days);
   }
   prefs.putUChar("hdays", historyDays);
+  prefs.putUChar("wPct",  coolDayPct);
   prefs.putUChar("cfgVer", 2);
   prefs.end();
+}
+
+// ── Weather ───────────────────────────────────────────────────────────────────
+
+void fetchWeather() {
+  WiFiClientSecure client; client.setInsecure();
+  HTTPClient http;
+  String url = String("https://api.open-meteo.com/v1/forecast?latitude=") +
+               String(WEATHER_LAT, 4) + "&longitude=" + String(WEATHER_LON, 4) +
+               "&daily=temperature_2m_max,precipitation_sum,cloud_cover_mean"
+               "&forecast_days=1&timezone=America%2FLos_Angeles";
+  if (!http.begin(client, url)) { http.end(); weatherFetchOk = false; return; }
+  int code = http.GET();
+  if (code != 200) { Serial.printf("Weather fetch failed: %d\n", code); http.end(); weatherFetchOk = false; return; }
+  JsonDocument doc;
+  DeserializationError err = deserializeJson(doc, http.getStream());
+  http.end();
+  if (err) { Serial.printf("Weather JSON error: %s\n", err.c_str()); weatherFetchOk = false; return; }
+  float maxC  = doc["daily"]["temperature_2m_max"][0] | 100.0f;
+  float precip= doc["daily"]["precipitation_sum"][0]  | 0.0f;
+  float cloud = doc["daily"]["cloud_cover_mean"][0]   | 0.0f;
+  float maxF  = maxC * 9.0f / 5.0f + 32.0f;
+  bool cool   = (maxF < 65.0f) || (cloud > 80.0f) || (precip > 2.5f);
+  weatherScale = cool ? coolDayPct : 100;
+  weatherFetchOk = true;
+  time_t now; time(&now); lastWeatherFetch = now;
+  Serial.printf("Weather: %.1f°F %.1fmm %.0f%% cloud → scale %d%%\n", maxF, precip, cloud, weatherScale);
 }
 
 // ── Scheduler ─────────────────────────────────────────────────────────────────
@@ -246,7 +284,11 @@ void checkSchedules() {
     progLastFired[pr] = now;
     int n = 0;
     for (int z = 0; z < NUM_ZONES; z++)
-      if (zoneDuration[z][pr] > 0 && (zoneDays[z][pr] & (1 << ti.tm_wday))) { enqueue(z, (uint32_t)zoneDuration[z][pr], pr + 1); n++; }
+      if (zoneDuration[z][pr] > 0 && (zoneDays[z][pr] & (1 << ti.tm_wday))) {
+        uint32_t dur = (uint32_t)zoneDuration[z][pr] * weatherScale / 100;
+        if (dur < 1) dur = 1;
+        enqueue(z, dur, pr + 1); n++;
+      }
     Serial.printf("Program %d (%s): queued %d zones\n", pr, PROG_NAMES[pr], n);
   }
 }
@@ -394,6 +436,17 @@ body.light .info-side:hover{color:#0f172a}
 body.light .info-center{color:#94a3b8}
 body.light .log-trigger{border-color:#cbd5e1;color:#94a3b8}
 body.light .log-trigger:hover{background:#f1f5f9;color:#475569;border-color:#94a3b8}
+.weather-row{display:flex;align-items:center;justify-content:center;gap:.5rem;margin-top:.5rem;width:100%;max-width:500px}
+.weather-badge{display:flex;align-items:center;gap:.35rem;font-size:.78rem;font-weight:600;color:#475569;background:#1e293b;border:1px solid #334155;border-radius:.4rem;padding:.25rem .6rem;letter-spacing:.03em}
+.weather-badge.active{color:#7dd3fc;border-color:rgba(125,211,252,.4);background:rgba(125,211,252,.08)}
+.weather-pct{width:2.8rem;background:transparent;border:none;border-bottom:1px solid #475569;color:inherit;font-size:.78rem;font-weight:700;text-align:center;padding:.05rem .1rem;-moz-appearance:textfield}
+.weather-pct::-webkit-inner-spin-button,.weather-pct::-webkit-outer-spin-button{-webkit-appearance:none}
+.weather-pct:focus{outline:none;border-bottom-color:#7dd3fc}
+body.light .weather-badge{color:#64748b;background:#f1f5f9;border-color:#cbd5e1}
+body.light .weather-badge.active{color:#0369a1;border-color:rgba(3,105,161,.3);background:rgba(3,105,161,.07)}
+body.light .weather-pct{border-bottom-color:#94a3b8}
+body.color .weather-badge{color:#737373;background:#262626;border-color:#404040}
+body.color .weather-badge.active{color:#38bdf8;border-color:rgba(56,189,248,.4);background:rgba(56,189,248,.08)}
 .log-ov{position:fixed;inset:0;background:rgba(0,0,0,.7);display:flex;align-items:flex-end;justify-content:center;z-index:200}
 .log-modal{background:#0f172a;border-radius:1rem 1rem 0 0;width:100%;max-width:500px;max-height:90vh;display:flex;flex-direction:column}
 .log-head{display:flex;align-items:center;justify-content:space-between;padding:.85rem 1rem;border-bottom:1px solid #475569;flex-shrink:0}
@@ -542,6 +595,13 @@ body.color .zday-a.on{background:#3b0764;color:#c4b5fd;border-color:#7c3aed}
 <div class="log-row">
   <button class="log-trigger" onclick="openLog()">&#128203; Run Log</button>
 </div>
+<div class="weather-row">
+  <span class="weather-badge" id="weather-badge">
+    <span id="weather-dot" style="width:7px;height:7px;border-radius:50%;background:#334155;flex-shrink:0;display:inline-block"></span>
+    &#9729; Cool day:
+    <input type="number" class="weather-pct" id="cool-pct-input" min="10" max="90" value="50" onchange="saveCoolPct()">%
+  </span>
+</div>
 <div class="info-row">
   <a class="info-side" href="https://github.com/jurassic73/irrigation_control" target="_blank"><svg height="14" viewBox="0 0 16 16" width="14" style="vertical-align:middle;margin-right:.3em" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>GitHub</a>
   <span class="info-center" id="uptime">Uptime: --</span>
@@ -606,7 +666,27 @@ async function fetchConfig(){
   activeZone=d.activeZone; queued=d.queued||[];
   initClock(d.epoch);
   if(d.uptime!=null) document.getElementById('uptime').textContent='Uptime: '+fmtUptime(d.uptime);
+  renderWeather(d.weatherScale??100, d.coolDayPct??50, d.weatherFetchOk??null);
   render();
+}
+
+function renderWeather(scale, pct, fetchOk){
+  const badge=document.getElementById('weather-badge');
+  const dot=document.getElementById('weather-dot');
+  const inp=document.getElementById('cool-pct-input');
+  if(inp) inp.value=pct;
+  if(badge) badge.classList.toggle('active', scale<100);
+  if(dot){
+    if(fetchOk===true) dot.style.background='#22c55e';
+    else if(fetchOk===false) dot.style.background='#f87171';
+    else dot.style.background='#334155';
+  }
+}
+
+async function saveCoolPct(){
+  const v=parseInt(document.getElementById('cool-pct-input').value,10);
+  if(isNaN(v)||v<10||v>90) return;
+  await fetch('/setcoolpct?pct='+v);
 }
 
 let clockBase=0,clockSync=0;
@@ -1053,8 +1133,16 @@ void setup() {
       }
       j += "]}";
     }
-    j += "]}";
+    j += "],\"weatherScale\":" + String(weatherScale) + ",\"coolDayPct\":" + String(coolDayPct) + ",\"weatherFetchOk\":" + String(weatherFetchOk ? "true" : "false") + "}";
     req->send(200, "application/json", j);
+  });
+
+  server.on("/setcoolpct", HTTP_GET, [](AsyncWebServerRequest* req){
+    if (req->hasParam("pct")) {
+      coolDayPct = (uint8_t)constrain(req->getParam("pct")->value().toInt(), 10, 90);
+      saveConfig();
+    }
+    req->send(200, "text/plain", "ok");
   });
 
   server.on("/setprogram", HTTP_GET, [](AsyncWebServerRequest* req){
@@ -1189,7 +1277,12 @@ void loop() {
   static unsigned long lastSched = 0;
   unsigned long now_ms = millis();
   runQueue();
-  if (now_ms - lastSched >= 15000) { lastSched = now_ms; checkSchedules(); }
+  if (now_ms - lastSched >= 15000) {
+    lastSched = now_ms;
+    checkSchedules();
+    time_t now; struct tm ti{}; time(&now); localtime_r(&now, &ti);
+    if (ti.tm_hour == 3 && ti.tm_min >= 30 && now - lastWeatherFetch > 43200) fetchWeather();
+  }
   if (now_ms - lastTempSample >= 600000UL) {
     lastTempSample = now_ms;
     time_t now; time(&now);
