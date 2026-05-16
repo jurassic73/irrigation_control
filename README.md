@@ -66,6 +66,8 @@ System uses 1/4″ OD push-to-connect tubing throughout. One solenoid valve per 
 | NPT male fittings      | TAILONZ 1/4″ OD × 1/4″ NPT male straight, 10-pack                    | ~$11      | [Amazon B07PBPB367](https://www.amazon.com/dp/B07PBPB367) |
 | Elbow + straight combo | TAILONZ 1/4″ OD elbow + straight NPT, 12-pack                          | ~$12      | [Amazon B088NMKHQ5](https://www.amazon.com/dp/B088NMKHQ5) |
 | Ball valves            | 1/4″ OD push-to-connect PVC ball valve, 5-pack                         | ~$10      | [Amazon B09N726LFW](https://www.amazon.com/dp/B09N726LFW) |
+| Pressure regulator     | 25 psi, 3/4″ hose thread, lead-free brass — protects drip system       | ~$13      | [Amazon B0B1M42TVG](https://www.amazon.com/dp/B0B1M42TVG) |
+| Supply tubing          | Raindrip 1/4″ OD black poly, 100 ft — smooth outer layer for push-to-connect compatibility | ~$10 | [Amazon B0007WJIJU0](https://www.amazon.com/dp/B0007WJIJU0) |
 
 ## 3D Printed Parts
 
