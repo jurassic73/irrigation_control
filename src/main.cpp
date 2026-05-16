@@ -31,6 +31,7 @@ WateringProgram programs[NUM_PROGRAMS] = {
 time_t progLastFired[NUM_PROGRAMS] = {};
 
 uint16_t zoneDuration[NUM_ZONES][NUM_PROGRAMS] = {};
+uint8_t  zoneDays[NUM_ZONES][NUM_PROGRAMS]     = {};
 
 struct QEntry { uint8_t zone; uint32_t secs; uint8_t trigger; }; // trigger: 0=manual, 1+=program id+1
 QEntry  qBuf[QUEUE_MAX];
@@ -185,6 +186,8 @@ void loadConfig() {
     for (int pr = 0; pr < NUM_PROGRAMS; pr++) {
       snprintf(k, sizeof(k), "d%d_%d", i, pr);
       zoneDuration[i][pr] = prefs.getUShort(k, 0);
+      snprintf(k, sizeof(k), "zd%d_%d", i, pr);
+      zoneDays[i][pr] = prefs.getUChar(k, 0x7F);
     }
   }
   for (int pr = 0; pr < NUM_PROGRAMS; pr++) {
@@ -213,7 +216,8 @@ void saveConfig() {
     snprintf(k, sizeof(k), "n%d", i);  prefs.putString(k, relayNames[i]);
     snprintf(k, sizeof(k), "p%d", i);  prefs.putUChar(k,  relayPins[i]);
     for (int pr = 0; pr < NUM_PROGRAMS; pr++) {
-      snprintf(k, sizeof(k), "d%d_%d", i, pr); prefs.putUShort(k, zoneDuration[i][pr]);
+      snprintf(k, sizeof(k), "d%d_%d", i, pr);  prefs.putUShort(k, zoneDuration[i][pr]);
+      snprintf(k, sizeof(k), "zd%d_%d", i, pr); prefs.putUChar(k,  zoneDays[i][pr]);
     }
   }
   for (int pr = 0; pr < NUM_PROGRAMS; pr++) {
@@ -242,7 +246,7 @@ void checkSchedules() {
     progLastFired[pr] = now;
     int n = 0;
     for (int z = 0; z < NUM_ZONES; z++)
-      if (zoneDuration[z][pr] > 0) { enqueue(z, (uint32_t)zoneDuration[z][pr], pr + 1); n++; }
+      if (zoneDuration[z][pr] > 0 && (zoneDays[z][pr] & (1 << ti.tm_wday))) { enqueue(z, (uint32_t)zoneDuration[z][pr], pr + 1); n++; }
     Serial.printf("Program %d (%s): queued %d zones\n", pr, PROG_NAMES[pr], n);
   }
 }
@@ -328,7 +332,7 @@ h1{font-size:1.4rem;font-weight:600;color:#7dd3fc;letter-spacing:.05em;text-tran
 .zdurs .dfield:first-child{border-right:1px solid #334155;padding-right:.5rem}
 .dlabel{font-size:.68rem;font-weight:600;letter-spacing:.07em;color:#e2e8f0;text-transform:uppercase}
 .dur-row{display:flex;align-items:center;gap:.3rem}
-.dur-row input{width:calc(4ch + 30px);min-width:0;background:#0f172a;border:1px solid #475569;border-radius:.3rem;color:#f8fafc;padding:.28rem .4rem;font-size:.82rem;text-align:center}
+.dur-row input{width:calc(4ch + 20px);min-width:0;background:#0f172a;border:1px solid #475569;border-radius:.3rem;color:#f8fafc;padding:.28rem .4rem;font-size:.82rem;text-align:center}
 .dur-row input:focus{outline:none;border-color:#7dd3fc}
 .dur-row span{font-size:.75rem;font-weight:600;color:#e2e8f0;white-space:nowrap}
 .ep{display:none;flex-direction:column;gap:.45rem;border-top:1px solid #475569;padding-top:.65rem;margin-top:.4rem}
@@ -363,6 +367,11 @@ body.light .rnbtn{background:#f8fafc;color:#0369a1;border-color:#93c5fd}
 body.light .rnbtn:hover:not(:disabled){background:#eff6ff}
 body.light .zexpand{border-color:#94a3b8}
 body.light .ep{border-color:#94a3b8}
+body.light .zsched-lbl{color:#0369a1;border-color:rgba(3,105,161,.3);background:rgba(3,105,161,.07)}
+body.light .zsched-c{color:#6d28d9;border-color:rgba(109,40,217,.3);background:rgba(109,40,217,.07)}
+body.light .zday{background:#f1f5f9;border-color:#cbd5e1;color:#94a3b8}
+body.light .zday-m.on{background:#0369a1;color:#e0f2fe;border-color:#0369a1}
+body.light .zday-a.on{background:#6d28d9;color:#ede9fe;border-color:#7c3aed}
 body.light .mbtn-cancel{background:#e2e8f0;color:#475569}
 body.light .modal-ov{background:rgba(0,0,0,.4)}
 body.light .modal-title{color:#0369a1}
@@ -417,6 +426,17 @@ body.light .alloff:hover{background:#fff0f0;border-color:#f87171;color:#b91c1c}
 .rnbtn:disabled{color:#334155;border-color:#1e293b;cursor:default}
 .xbtn{background:none;border:none;color:#64748b;cursor:pointer;font-size:2.25rem;padding:.05rem .25rem;line-height:1;flex-shrink:0;transition:color .15s}
 .xbtn:hover{color:#94a3b8}
+.zsched{display:flex;align-items:center;margin-bottom:.35rem;position:relative;min-height:1.3rem}
+.zsched-lbl{font-size:.82rem;font-weight:700;color:#7dd3fc;letter-spacing:.04em;white-space:nowrap;border:1px solid rgba(125,211,252,.4);background:rgba(125,211,252,.1);border-radius:.3rem;padding:.1rem .35rem}
+.zsched-c{position:absolute;left:calc(7 * 19px + 6 * 0.2rem + 20px);color:#a78bfa;border-color:rgba(167,139,250,.4);background:rgba(167,139,250,.1)}
+.zsched-dis{opacity:.75;filter:grayscale(1)}
+.zdays-wrap{position:relative;height:19px;margin-bottom:.35rem}
+.zday-row{display:flex;gap:.2rem;align-items:center;width:max-content}
+.zday-row-a{position:absolute;top:0;left:calc(7 * 19px + 6 * 0.2rem + 20px)}
+.zday{background:#1e293b;border:1px solid #334155;border-radius:.2rem;color:#64748b;font-size:.65rem;font-weight:700;width:19px;height:19px;display:flex;align-items:center;justify-content:center;cursor:pointer;transition:background .15s,border-color .15s,color .15s;padding:0;line-height:1;flex-shrink:0}
+.zdays-ro{pointer-events:none}
+.zday-m.on{background:#075985;color:#7dd3fc;border-color:#0284c7}
+.zday-a.on{background:#3b0764;color:#c4b5fd;border-color:#7c3aed}
 .zexpand{display:none;flex-direction:column;gap:.55rem;border-top:1px solid #475569;padding-top:.65rem;margin-top:.5rem}
 .zexpand.open{display:flex}
 .ztog-row{display:flex;align-items:center;gap:.6rem}
@@ -499,6 +519,11 @@ body.color .day{background:#1c1c1c;border-color:#606060;color:#737373}
 body.color .day.on{background:#0369a1;color:#e0f2fe;border-color:#0369a1}
 body.color .tg-btn{border-color:#606060;color:#a3a3a3}
 body.color .tg-btn.active{background:#0ea5e9;border-color:#0ea5e9;color:#fff}
+body.color .zsched-lbl{color:#38bdf8;border-color:rgba(56,189,248,.4);background:rgba(56,189,248,.1)}
+body.color .zsched-c{color:#a78bfa;border-color:rgba(167,139,250,.4);background:rgba(167,139,250,.1)}
+body.color .zday{background:#262626;border-color:#404040;color:#737373}
+body.color .zday-m.on{background:#075985;color:#38bdf8;border-color:#0284c7}
+body.color .zday-a.on{background:#3b0764;color:#c4b5fd;border-color:#7c3aed}
 </style>
 </head>
 <body>
@@ -596,6 +621,7 @@ setInterval(tickClock,1000);
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 function escA(s){return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;');}
 function pad(n){return String(n).padStart(2,'0');}
+function fmtSchedDur(sec){const m=Math.floor(sec/60),s=sec%60;return m&&s?m+'m'+s+'s':m?m+'m':s+'sec';}
 function zst(id){return id===activeZone?'active':queued.includes(id)?'queued':'off';}
 
 function render(){renderPrograms();renderZones();}
@@ -633,6 +659,25 @@ function renderZones(){
     ).join('');
     const c=document.createElement('div');
     c.className='zcard '+st;
+    const d0=z.durations[0]||0,d1=programs.length>1?z.durations[1]||0:0;
+    const zd=z.zdays||[];
+    const schedRow=(!isExp&&(d0>0||d1>0))?
+      '<div class="zsched">'+
+      (d0>0?'<span class="zsched-lbl'+(programs[0].enabled?'':' zsched-dis')+'">'+esc(programs[0].name)+' '+fmtSchedDur(d0)+'</span>':'')+
+      (d1>0?'<span class="zsched-lbl zsched-c'+(programs[1].enabled?'':' zsched-dis')+'">'+esc(programs[1].name)+' '+fmtSchedDur(d1)+'</span>':'')+
+      '</div>':'';
+    let zdayHtml='';
+    programs.forEach((p,pr)=>{
+      const dur=z.durations[pr]||0;
+      if(!dur)return;
+      const mask=zd[pr]!==undefined?zd[pr]:0x7F;
+      const cls=pr===0?'zday-m':'zday-a';
+      const rowCls=pr===0?'zday-row':'zday-row zday-row-a';
+      zdayHtml+='<div class="'+rowCls+'">'+
+        DAYS.map((l,d)=>'<button class="zday '+cls+((mask>>d)&1?' on':'')+'"'+(isExp?' onclick="toggleZDay('+i+','+pr+','+d+')"':'')+'>'+l+'</button>').join('')+
+        '</div>';
+    });
+    if(zdayHtml)zdayHtml='<div class="zdays-wrap'+(isExp?'':' zdays-ro')+'">'+zdayHtml+'</div>';
     c.innerHTML=
       '<div class="ztop">'+
         '<span class="zname">'+esc(z.name)+'</span>'+
@@ -640,6 +685,8 @@ function renderZones(){
         '<button class="rnbtn" '+(busy?'disabled':'')+' onclick="runNow('+i+')">&#9654; Run Now</button>'+
         '<button class="xbtn" onclick="toggleExpand('+i+')">'+(isExp?'▴':'▾')+'</button>'+
       '</div>'+
+      schedRow+
+      zdayHtml+
       '<div class="zexpand'+(isExp?' open':'')+'" id="zx'+i+'">'+
         '<div class="ztog-row">'+
           '<button class="ztog'+(isOn?' on':'')+'" onclick="toggleZone('+i+')"></button>'+
@@ -697,11 +744,19 @@ async function saveDur(zi,pr){
   const s=parseInt(document.getElementById('durS'+zi+'_'+pr).value)||0;
   const val=m*60+s;
   zones[zi].durations[pr]=val;
+  renderZones();
   await fetch('/setzone?id='+zi+'&d'+pr+'='+val);
 }
 
 function toggleSet(s,i){s.has(i)?s.delete(i):s.add(i);renderZones();}
 function toggleExpand(i){toggleSet(expanded,i);}
+async function toggleZDay(zi,pr,day){
+  const z=zones[zi];
+  if(!z.zdays)z.zdays=[0x7F,0x7F];
+  z.zdays[pr]=(z.zdays[pr]!==undefined?z.zdays[pr]:0x7F)^(1<<day);
+  renderZones();
+  await fetch('/setzone?id='+zi+'&zd'+pr+'='+z.zdays[pr]);
+}
 function toggleEdit(i){toggleSet(editing,i);}
 
 async function saveZone(i){
@@ -959,7 +1014,9 @@ void setup() {
   { time_t t; time(&t); addTempSample(t, temperatureRead()); lastTempSample = millis(); }
 
   server.on("/", HTTP_GET, [](AsyncWebServerRequest* req){
-    req->send(200, "text/html", INDEX_HTML);
+    AsyncWebServerResponse* r = req->beginResponse(200, "text/html", INDEX_HTML);
+    r->addHeader("Cache-Control", "no-cache");
+    req->send(r);
   });
 
   server.on("/config", HTTP_GET, [](AsyncWebServerRequest* req){
@@ -967,8 +1024,8 @@ void setup() {
     time(&now); localtime_r(&now, &ti);
     long tzs = ti.tm_isdst > 0 ? (-7L*3600L) : (-8L*3600L);
 
-    String j; j.reserve(600);
-    j = "{\"epoch\":" + String((long)now) + ",\"tzSec\":" + String(tzs) + ",\"uptime\":" + String((unsigned long)(millis()/1000));
+    String j; j.reserve(1000);
+    j += "{\"epoch\":" + String((long)now) + ",\"tzSec\":" + String(tzs) + ",\"uptime\":" + String((unsigned long)(millis()/1000));
     j += ",\"activeZone\":" + String(activeZone) + ",\"queued\":[";
     for (int i = 0; i < qSize; i++) {
       if (i) j += ",";
@@ -988,6 +1045,11 @@ void setup() {
       for (int pr = 0; pr < NUM_PROGRAMS; pr++) {
         if (pr) j += ",";
         j += String(zoneDuration[i][pr]);
+      }
+      j += "],\"zdays\":[";
+      for (int pr = 0; pr < NUM_PROGRAMS; pr++) {
+        if (pr) j += ",";
+        j += String(zoneDays[i][pr]);
       }
       j += "]}";
     }
@@ -1024,8 +1086,11 @@ void setup() {
       }
     }
     for (int pr = 0; pr < NUM_PROGRAMS; pr++) {
-      char pname[4]; snprintf(pname, sizeof(pname), "d%d", pr);
+      char pname[5];
+      snprintf(pname, sizeof(pname), "d%d", pr);
       if (req->hasParam(pname)) zoneDuration[idx][pr] = req->getParam(pname)->value().toInt();
+      snprintf(pname, sizeof(pname), "zd%d", pr);
+      if (req->hasParam(pname)) zoneDays[idx][pr] = (uint8_t)constrain(req->getParam(pname)->value().toInt(), 0, 127);
     }
     saveConfig();
     req->send(200,"text/plain","ok");

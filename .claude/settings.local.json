@@ -42,7 +42,8 @@
       "Bash(git push *)",
       "PowerShell(& \"$env:USERPROFILE\\\\.platformio\\\\penv\\\\Scripts\\\\pio.exe\" run --target upload --project-dir \"d:\\\\hans_docs\\\\github\\\\irrigation_control\" --upload-port COM4 2>&1 | Select-String -Pattern \"SUCCESS|FAILED|error|Error\")",
       "PowerShell(& \"$env:USERPROFILE\\\\.platformio\\\\penv\\\\Scripts\\\\pio.exe\" run --target upload --project-dir \"d:\\\\hans_docs\\\\github\\\\irrigation_control\" --upload-port COM4 2>&1 | Select-String -Pattern \"error:|warning:|SUCCESS|FAILED|Compiling|Linking|Writing|Connecting\")",
-      "PowerShell(& \"$env:USERPROFILE\\\\.platformio\\\\penv\\\\Scripts\\\\pio.exe\" run --target upload --project-dir \"d:\\\\hans_docs\\\\github\\\\irrigation_control\" --upload-port COM4 2>&1 | Select-String -Pattern \"error:|SUCCESS|FAILED|Connecting\")"
+      "PowerShell(& \"$env:USERPROFILE\\\\.platformio\\\\penv\\\\Scripts\\\\pio.exe\" run --target upload --project-dir \"d:\\\\hans_docs\\\\github\\\\irrigation_control\" --upload-port COM4 2>&1 | Select-String -Pattern \"error:|SUCCESS|FAILED|Connecting\")",
+      "PowerShell(Get-ChildItem -Path \"d:\\\\hans_docs\\\\github\\\\irrigation_control\" -Recurse -Force | Where-Object { $_.Extension -in @\\('.html', '.js', '.css'\\) } | Select-Object -ExpandProperty FullName)"
     ]
   }
 }
