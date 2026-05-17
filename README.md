@@ -130,7 +130,16 @@ If water drips from the black valve body itself (not from a fitting), the intern
    const char* WIFI_SSID = "your_ssid";
    const char* WIFI_PASS = "your_password";
    ```
-3. Connect the ESP32-S3 via the **right USB-C port** (labeled USB on the board). This port uses native USB and handles bootloader mode automatically — no button pressing required for uploads or reboots. The left port (UART) requires holding BOOT then pressing RESET to enter download mode.
+3. Copy `src/location.h.example` to `src/location.h` and fill in your coordinates (used for weather-based watering adjustments):
+
+   ```cpp
+   #define WEATHER_LAT  45.633   // your latitude
+   #define WEATHER_LON -122.490  // your longitude
+   ```
+
+   Both `secrets.h` and `location.h` are gitignored so your credentials and location stay off GitHub.
+
+4. Connect the ESP32-S3 via the **right USB-C port** (labeled USB on the board). This port uses native USB and handles bootloader mode automatically — no button pressing required for uploads or reboots. The left port (UART) requires holding BOOT then pressing RESET to enter download mode.
 4. Build and upload:
 
    ```text

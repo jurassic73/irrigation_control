@@ -65,6 +65,20 @@ uint8_t coolDayPct    = 50;   // % to water on cool/overcast days (persisted)
 uint8_t weatherScale  = 100;  // active scale factor — RAM only, resets to 100 on reboot
 bool    weatherFetchOk = false;
 time_t  lastWeatherFetch = 0;
+time_t  lastWeatherAttempt = 0;
+bool    pendingWeatherFetch = false;
+
+#define WEATHER_LOG_MAX 7
+struct WeatherLogEntry { time_t t; float maxF, precip, cloud; uint8_t scale; bool ok; int16_t errCode; };
+WeatherLogEntry wLog[WEATHER_LOG_MAX];
+int wLogCount = 0, wLogHead = 0;
+
+void pushWeatherLog(time_t t, float maxF, float precip, float cloud, uint8_t scale, bool ok, int16_t errCode = 0) {
+  int idx = (wLogHead + wLogCount) % WEATHER_LOG_MAX;
+  wLog[idx] = {t, maxF, precip, cloud, scale, ok, errCode};
+  if (wLogCount < WEATHER_LOG_MAX) wLogCount++;
+  else wLogHead = (wLogHead + 1) % WEATHER_LOG_MAX;
+}
 
 Preferences    prefs;
 AsyncWebServer server(80);
@@ -246,19 +260,22 @@ void saveConfig() {
 // ── Weather ───────────────────────────────────────────────────────────────────
 
 void fetchWeather() {
+  time_t now; time(&now);
+  lastWeatherAttempt = now;
   WiFiClientSecure client; client.setInsecure();
   HTTPClient http;
   String url = String("https://api.open-meteo.com/v1/forecast?latitude=") +
                String(WEATHER_LAT, 4) + "&longitude=" + String(WEATHER_LON, 4) +
                "&daily=temperature_2m_max,precipitation_sum,cloud_cover_mean"
                "&forecast_days=1&timezone=America%2FLos_Angeles";
-  if (!http.begin(client, url)) { http.end(); weatherFetchOk = false; return; }
+  if (!http.begin(client, url)) { http.end(); weatherFetchOk = false; pushWeatherLog(now,0,0,0,0,false,-1); return; }
   int code = http.GET();
-  if (code != 200) { Serial.printf("Weather fetch failed: %d\n", code); http.end(); weatherFetchOk = false; return; }
-  JsonDocument doc;
-  DeserializationError err = deserializeJson(doc, http.getStream());
+  if (code != 200) { Serial.printf("Weather fetch failed: %d\n", code); http.end(); weatherFetchOk = false; pushWeatherLog(now,0,0,0,0,false,(int16_t)code); return; }
+  String body = http.getString();
   http.end();
-  if (err) { Serial.printf("Weather JSON error: %s\n", err.c_str()); weatherFetchOk = false; return; }
+  JsonDocument doc;
+  DeserializationError err = deserializeJson(doc, body);
+  if (err) { Serial.printf("Weather JSON error: %s\n", err.c_str()); weatherFetchOk = false; pushWeatherLog(now,0,0,0,0,false,-2); return; }
   float maxC  = doc["daily"]["temperature_2m_max"][0] | 100.0f;
   float precip= doc["daily"]["precipitation_sum"][0]  | 0.0f;
   float cloud = doc["daily"]["cloud_cover_mean"][0]   | 0.0f;
@@ -266,7 +283,8 @@ void fetchWeather() {
   bool cool   = (maxF < 65.0f) || (cloud > 80.0f) || (precip > 2.5f);
   weatherScale = cool ? coolDayPct : 100;
   weatherFetchOk = true;
-  time_t now; time(&now); lastWeatherFetch = now;
+  lastWeatherFetch = now;
+  pushWeatherLog(now, maxF, precip, cloud, weatherScale, true);
   Serial.printf("Weather: %.1f°F %.1fmm %.0f%% cloud → scale %d%%\n", maxF, precip, cloud, weatherScale);
 }
 
@@ -353,6 +371,7 @@ h1{font-size:1.4rem;font-weight:600;color:#7dd3fc;letter-spacing:.05em;text-tran
 .days{display:flex;gap:.2rem;justify-content:center;margin-bottom:.6rem}
 .day{width:26px;height:26px;border-radius:.25rem;border:1px solid #475569;background:#0f172a;color:#94a3b8;font-size:.72rem;font-weight:700;cursor:pointer;transition:background .15s,color .15s}
 .day.on{background:#0369a1;color:#e0f2fe;border-color:#0369a1}
+.days.dis .day{opacity:.3;pointer-events:none}
 .sbtn{width:100%;background:#0369a1;color:#e0f2fe;border:none;border-radius:.3rem;padding:.35rem;font-size:.85rem;font-weight:600;cursor:pointer;letter-spacing:.04em;transition:background .15s}
 .sbtn:hover{background:#0284c7}
 .zone-grid{display:flex;flex-direction:column;gap:.75rem;width:100%;max-width:500px}
@@ -429,24 +448,24 @@ body.light .day.on{background:#0369a1;color:#e0f2fe;border-color:#0369a1}
 .th-icon{background:none;border:none;font-size:1rem;cursor:pointer;padding:.15rem .2rem;border-radius:.25rem;opacity:.22;transition:opacity .2s;line-height:1}
 .th-icon:hover{opacity:.5}
 .log-row{display:flex;justify-content:center;margin:.75rem 0 .25rem;width:100%;max-width:500px}
-.log-trigger{background:none;border:1px solid #334155;border-radius:.5rem;color:#64748b;font-size:1rem;font-weight:600;padding:.4rem 1.2rem;cursor:pointer;transition:background .15s,color .15s,border-color .15s;letter-spacing:.03em}
-.log-trigger:hover{background:#1e293b;color:#94a3b8;border-color:#475569}
+.log-trigger{background:none;border:1px solid #334155;border-radius:.5rem;color:#7dd3fc;font-size:1rem;font-weight:600;padding:.4rem 1.2rem;cursor:pointer;transition:background .15s,color .15s,border-color .15s;letter-spacing:.03em}
+.log-trigger:hover{background:#1e293b;color:#93dffe;border-color:#475569}
 body.light .info-side{color:#475569}
 body.light .info-side:hover{color:#0f172a}
 body.light .info-center{color:#94a3b8}
-body.light .log-trigger{border-color:#cbd5e1;color:#94a3b8}
-body.light .log-trigger:hover{background:#f1f5f9;color:#475569;border-color:#94a3b8}
+body.light .log-trigger{border-color:#cbd5e1;color:#0369a1}
+body.light .log-trigger:hover{background:#f1f5f9;color:#0284c7;border-color:#94a3b8}
 .weather-row{display:flex;align-items:center;justify-content:center;gap:.5rem;margin-top:.5rem;width:100%;max-width:500px}
-.weather-badge{display:flex;align-items:center;gap:.35rem;font-size:.78rem;font-weight:600;color:#475569;background:#1e293b;border:1px solid #334155;border-radius:.4rem;padding:.25rem .6rem;letter-spacing:.03em}
-.weather-badge.active{color:#7dd3fc;border-color:rgba(125,211,252,.4);background:rgba(125,211,252,.08)}
-.weather-pct{width:2.8rem;background:transparent;border:none;border-bottom:1px solid #475569;color:inherit;font-size:.78rem;font-weight:700;text-align:center;padding:.05rem .1rem;-moz-appearance:textfield}
+.weather-badge{display:flex;align-items:center;gap:.35rem;font-size:1rem;font-weight:600;color:#7dd3fc;background:none;border:1px solid #334155;border-radius:.5rem;padding:.4rem 1.2rem;letter-spacing:.03em}
+.weather-badge.active{border-color:rgba(125,211,252,.4);background:rgba(125,211,252,.08)}
+.weather-pct{width:2.8rem;background:transparent;border:none;border-bottom:1px solid rgba(125,211,252,.4);color:inherit;font-size:1rem;font-weight:700;text-align:center;padding:.05rem .1rem;-moz-appearance:textfield}
 .weather-pct::-webkit-inner-spin-button,.weather-pct::-webkit-outer-spin-button{-webkit-appearance:none}
 .weather-pct:focus{outline:none;border-bottom-color:#7dd3fc}
-body.light .weather-badge{color:#64748b;background:#f1f5f9;border-color:#cbd5e1}
-body.light .weather-badge.active{color:#0369a1;border-color:rgba(3,105,161,.3);background:rgba(3,105,161,.07)}
-body.light .weather-pct{border-bottom-color:#94a3b8}
-body.color .weather-badge{color:#737373;background:#262626;border-color:#404040}
-body.color .weather-badge.active{color:#38bdf8;border-color:rgba(56,189,248,.4);background:rgba(56,189,248,.08)}
+body.light .weather-badge{color:#0369a1;border-color:#cbd5e1}
+body.light .weather-badge.active{border-color:rgba(3,105,161,.3);background:rgba(3,105,161,.07)}
+body.light .weather-pct{border-bottom-color:rgba(3,105,161,.4)}
+body.color .weather-badge{color:#38bdf8;border-color:#404040}
+body.color .weather-badge.active{border-color:rgba(56,189,248,.4);background:rgba(56,189,248,.08)}
 .log-ov{position:fixed;inset:0;background:rgba(0,0,0,.7);display:flex;align-items:flex-end;justify-content:center;z-index:200}
 .log-modal{background:#0f172a;border-radius:1rem 1rem 0 0;width:100%;max-width:500px;max-height:90vh;display:flex;flex-direction:column}
 .log-head{display:flex;align-items:center;justify-content:space-between;padding:.85rem 1rem;border-bottom:1px solid #475569;flex-shrink:0}
@@ -546,8 +565,8 @@ body.color .rnbtn:disabled{color:#525252;border-color:#333}
 body.color .info-side{color:#737373}
 body.color .info-side:hover{color:#a3a3a3}
 body.color .info-center{color:#737373}
-body.color .log-trigger{border-color:#404040;color:#737373}
-body.color .log-trigger:hover{background:#262626;color:#a3a3a3;border-color:#606060}
+body.color .log-trigger{border-color:#404040;color:#38bdf8}
+body.color .log-trigger:hover{background:#262626;color:#7dd3fc;border-color:#606060}
 body.color .modal-title{color:#38bdf8}
 body.color .mbtn-cancel{background:#484848;color:#d4d4d4}
 body.color .mbtn-cancel:hover{background:#5a5a5a}
@@ -597,7 +616,7 @@ body.color .zday-a.on{background:#3b0764;color:#c4b5fd;border-color:#7c3aed}
 </div>
 <div class="weather-row">
   <span class="weather-badge" id="weather-badge">
-    <span id="weather-dot" style="width:7px;height:7px;border-radius:50%;background:#334155;flex-shrink:0;display:inline-block"></span>
+    <span onclick="openWeatherLog()" style="cursor:pointer;padding:10px;margin:-10px;flex-shrink:0;display:inline-flex;align-items:center;justify-content:center"><span id="weather-dot" style="width:7px;height:7px;border-radius:50%;background:#334155;display:inline-block"></span></span>
     &#9729; Cool day:
     <input type="number" class="weather-pct" id="cool-pct-input" min="10" max="90" value="50" onchange="saveCoolPct()">%
   </span>
@@ -611,6 +630,12 @@ body.color .zday-a.on{background:#3b0764;color:#c4b5fd;border-color:#7c3aed}
   <div class="log-modal">
     <div class="log-head"><span>&#128203; Run History</span><button class="log-close" onclick="closeLog()">&#10005;</button></div>
     <div class="log-body" id="log-body"><div class="log-empty">Loading…</div></div>
+  </div>
+</div>
+<div class="log-ov" id="wlog-ov" style="display:none;align-items:center">
+  <div class="log-modal" style="border-radius:1rem">
+    <div class="log-head"><span>&#9729; Weather Log</span><div style="display:flex;align-items:center;gap:.5rem"><button id="wfetch-btn" class="log-close" onclick="manualFetch()" style="font-size:.75rem;padding:.2rem .55rem;border:1px solid #475569;border-radius:.35rem">&#8635; Fetch</button><button class="log-close" onclick="closeWeatherLog()">&#10005;</button></div></div>
+    <div class="log-body" id="wlog-body"><div class="log-empty">Loading…</div></div>
   </div>
 </div>
 <div class="tg-ov" id="tg-ov" style="display:none">
@@ -717,7 +742,7 @@ function renderPrograms(){
     c.innerHTML='<div class="phead"><span class="pname">'+esc(p.name)+'</span>'+
       '<button class="ptog'+(p.enabled?' on':'')+'" onclick="toggleProg('+i+')"></button></div>'+
       '<input class="ptime" type="time" id="pt'+i+'" value="'+pad(p.h)+':'+pad(p.m)+'" onchange="saveProg('+i+')">'+
-      '<div class="days">'+dh+'</div>';
+      '<div class="days'+(p.enabled?'':' dis')+'">'+dh+'</div>';
     el.appendChild(c);
   });
 }
@@ -950,6 +975,43 @@ async function openLog(){
 }
 function closeLog(){document.getElementById('log-ov').style.display='none';}
 
+async function openWeatherLog(){
+  document.getElementById('wlog-ov').style.display='flex';
+  await loadWeatherLog();
+}
+async function loadWeatherLog(){
+  const el=document.getElementById('wlog-body');
+  el.innerHTML='<div class="log-empty">Loading…</div>';
+  const data=await(await fetch('/weatherlog')).json();
+  if(!data.length){el.innerHTML='<div class="log-empty">No weather history yet.</div>';return;}
+  let html='';
+  data.forEach(e=>{
+    const d=new Date(e.t*1000);
+    const ds=d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
+    const ts=d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+    if(!e.ok){
+      const reason=e.err===-1?'connect failed':e.err===-2?'JSON error':'HTTP '+e.err;
+      html+='<div class="log-entry"><div class="log-zone" style="color:#f87171">&#9888; Fetch failed</div><div class="log-time" style="display:flex;flex-direction:column;align-items:flex-end;gap:.1rem"><span style="font-size:.7rem;color:#f87171">'+reason+'</span><span>'+ds+' '+ts+'</span></div></div>';
+    } else {
+      html+='<div class="log-entry">'+
+        '<div class="log-zone">'+ds+' '+ts+'</div>'+
+        '<div style="font-size:.72rem;color:#94a3b8">'+e.maxF.toFixed(1)+'&#176;F &middot; '+e.precip.toFixed(1)+'mm &middot; '+e.cloud+'% cloud</div>'+
+        '<div class="log-dur" style="color:'+(e.scale<100?'#a78bfa':'#22c55e')+'">'+e.scale+'% water</div>'+
+        '</div>';
+    }
+  });
+  el.innerHTML=html;
+}
+async function manualFetch(){
+  const btn=document.getElementById('wfetch-btn');
+  btn.disabled=true; btn.textContent='…';
+  await fetch('/fetchweather');
+  await new Promise(r=>setTimeout(r,5000));
+  await loadWeatherLog();
+  btn.disabled=false; btn.innerHTML='&#8635; Fetch';
+}
+function closeWeatherLog(){document.getElementById('wlog-ov').style.display='none';}
+
 function setTheme(t){
   document.body.classList.remove('light','color');
   if(t==='light')document.body.classList.add('light');
@@ -1145,6 +1207,26 @@ void setup() {
     req->send(200, "text/plain", "ok");
   });
 
+  server.on("/fetchweather", HTTP_GET, [](AsyncWebServerRequest* req){
+    pendingWeatherFetch = true;
+    req->send(200, "text/plain", "ok");
+  });
+
+  server.on("/weatherlog", HTTP_GET, [](AsyncWebServerRequest* req){
+    String j = "[";
+    for (int i = wLogCount - 1; i >= 0; i--) {
+      int idx = (wLogHead + i) % WEATHER_LOG_MAX;
+      if (i < wLogCount - 1) j += ",";
+      WeatherLogEntry& e = wLog[idx];
+      j += "{\"t\":" + String((long)e.t) + ",\"ok\":" + (e.ok ? "true" : "false");
+      if (e.ok) j += ",\"maxF\":" + String(e.maxF, 1) + ",\"precip\":" + String(e.precip, 1) + ",\"cloud\":" + String(e.cloud, 0) + ",\"scale\":" + String(e.scale);
+      if (!e.ok) j += ",\"err\":" + String(e.errCode);
+      j += "}";
+    }
+    j += "]";
+    req->send(200, "application/json", j);
+  });
+
   server.on("/setprogram", HTTP_GET, [](AsyncWebServerRequest* req){
     if (!req->hasParam("id")) { req->send(400,"text/plain","missing id"); return; }
     int id = req->getParam("id")->value().toInt();
@@ -1275,13 +1357,19 @@ void setup() {
 
 void loop() {
   static unsigned long lastSched = 0;
+  static unsigned long lastWifiRetry = 0;
   unsigned long now_ms = millis();
   runQueue();
+  if (WiFi.status() != WL_CONNECTED && now_ms - lastWifiRetry > 30000) {
+    lastWifiRetry = now_ms;
+    WiFi.reconnect();
+  }
+  if (pendingWeatherFetch) { pendingWeatherFetch = false; fetchWeather(); }
   if (now_ms - lastSched >= 15000) {
     lastSched = now_ms;
     checkSchedules();
     time_t now; struct tm ti{}; time(&now); localtime_r(&now, &ti);
-    if (ti.tm_hour == 3 && ti.tm_min >= 30 && now - lastWeatherFetch > 43200) fetchWeather();
+    if (ti.tm_hour == 3 && ti.tm_min >= 30 && now - lastWeatherFetch > 43200 && now - lastWeatherAttempt > 1800) fetchWeather();
   }
   if (now_ms - lastTempSample >= 600000UL) {
     lastTempSample = now_ms;
