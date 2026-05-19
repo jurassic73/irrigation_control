@@ -447,8 +447,8 @@ body.light .day.on{background:#0369a1;color:#e0f2fe;border-color:#0369a1}
 .theme-tgl{display:flex;gap:.15rem;margin-left:auto}
 .th-icon{background:none;border:none;font-size:1rem;cursor:pointer;padding:.15rem .2rem;border-radius:.25rem;opacity:.22;transition:opacity .2s;line-height:1}
 .th-icon:hover{opacity:.5}
-.log-row{display:flex;justify-content:center;margin:.75rem 0 .25rem;width:100%;max-width:500px}
-.log-trigger{background:none;border:1px solid #334155;border-radius:.5rem;color:#7dd3fc;font-size:1rem;font-weight:600;padding:.4rem 1.2rem;cursor:pointer;transition:background .15s,color .15s,border-color .15s;letter-spacing:.03em}
+.log-row{display:flex;justify-content:center;flex-wrap:wrap;gap:.5rem;margin:.75rem 0 .25rem;width:100%;max-width:500px}
+.log-trigger{background:none;border:1px solid #334155;border-radius:.5rem;color:#7dd3fc;font-size:1rem;font-weight:600;padding:.4rem 1.2rem;cursor:pointer;transition:background .15s,color .15s,border-color .15s;letter-spacing:.03em;white-space:nowrap}
 .log-trigger:hover{background:#1e293b;color:#93dffe;border-color:#475569}
 body.light .info-side{color:#475569}
 body.light .info-side:hover{color:#0f172a}
@@ -456,7 +456,7 @@ body.light .info-center{color:#94a3b8}
 body.light .log-trigger{border-color:#cbd5e1;color:#0369a1}
 body.light .log-trigger:hover{background:#f1f5f9;color:#0284c7;border-color:#94a3b8}
 .weather-row{display:flex;align-items:center;justify-content:center;gap:.5rem;margin-top:.5rem;width:100%;max-width:500px}
-.weather-badge{display:flex;align-items:center;gap:.35rem;font-size:1rem;font-weight:600;color:#7dd3fc;background:none;border:1px solid #334155;border-radius:.5rem;padding:.4rem 1.2rem;letter-spacing:.03em}
+.weather-badge{display:flex;align-items:center;gap:.35rem;font-size:1rem;font-weight:600;color:#7dd3fc;background:none;border:1px solid #334155;border-radius:.5rem;padding:.4rem 1.2rem;letter-spacing:.03em;white-space:nowrap}
 .weather-badge.active{border-color:rgba(125,211,252,.4);background:rgba(125,211,252,.08)}
 .weather-pct{width:2.8rem;background:transparent;border:none;border-bottom:1px solid rgba(125,211,252,.4);color:inherit;font-size:1rem;font-weight:700;text-align:center;padding:.05rem .1rem;-moz-appearance:textfield}
 .weather-pct::-webkit-inner-spin-button,.weather-pct::-webkit-outer-spin-button{-webkit-appearance:none}
@@ -613,6 +613,7 @@ body.color .zday-a.on{background:#3b0764;color:#c4b5fd;border-color:#7c3aed}
 <div class="prog-grid" id="prog-grid"></div>
 <div class="log-row">
   <button class="log-trigger" onclick="openLog()">&#128203; Run Log</button>
+  <button class="log-trigger" onclick="openChangeLog()">&#9998; Change Log</button>
 </div>
 <div class="weather-row">
   <span class="weather-badge" id="weather-badge">
@@ -620,6 +621,7 @@ body.color .zday-a.on{background:#3b0764;color:#c4b5fd;border-color:#7c3aed}
     &#9729; Cool day:
     <input type="number" class="weather-pct" id="cool-pct-input" min="10" max="90" value="50" onchange="saveCoolPct()">%
   </span>
+  <button class="log-trigger" id="dl-btn" onclick="downloadLogs()">&#128229; Logs</button>
 </div>
 <div class="info-row">
   <a class="info-side" href="https://github.com/jurassic73/irrigation_control" target="_blank"><svg height="14" viewBox="0 0 16 16" width="14" style="vertical-align:middle;margin-right:.3em" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>GitHub</a>
@@ -630,6 +632,12 @@ body.color .zday-a.on{background:#3b0764;color:#c4b5fd;border-color:#7c3aed}
   <div class="log-modal">
     <div class="log-head"><span>&#128203; Run History</span><button class="log-close" onclick="closeLog()">&#10005;</button></div>
     <div class="log-body" id="log-body"><div class="log-empty">Loading…</div></div>
+  </div>
+</div>
+<div class="log-ov" id="clog-ov" style="display:none">
+  <div class="log-modal">
+    <div class="log-head"><span>&#9998; Change History</span><div style="display:flex;align-items:center;gap:.5rem"><button class="log-close" onclick="clearChangeLog()" style="font-size:.75rem;padding:.2rem .55rem;border:1px solid #475569;border-radius:.35rem">Clear</button><button class="log-close" onclick="closeChangeLog()">&#10005;</button></div></div>
+    <div class="log-body" id="clog-body"><div class="log-empty">No changes recorded yet.</div></div>
   </div>
 </div>
 <div class="log-ov" id="wlog-ov" style="display:none;align-items:center">
@@ -848,6 +856,13 @@ async function saveDur(zi,pr){
   const m=parseInt(document.getElementById('durM'+zi+'_'+pr).value)||0;
   const s=parseInt(document.getElementById('durS'+zi+'_'+pr).value)||0;
   const val=m*60+s;
+  const old=zones[zi].durations[pr];
+  if(val!==old){
+    const cl=JSON.parse(localStorage.getItem('irrigChangeLog')||'[]');
+    cl.push({ts:Math.floor(Date.now()/1000),zi,name:zones[zi].name,pr,old,val});
+    if(cl.length>500)cl.splice(0,cl.length-500);
+    localStorage.setItem('irrigChangeLog',JSON.stringify(cl));
+  }
   zones[zi].durations[pr]=val;
   renderZones();
   await fetch('/setzone?id='+zi+'&d'+pr+'='+val);
@@ -974,6 +989,108 @@ async function openLog(){
   el.innerHTML=html;
 }
 function closeLog(){document.getElementById('log-ov').style.display='none';}
+
+function openChangeLog(){
+  document.getElementById('clog-ov').style.display='flex';
+  renderChangeLog();
+}
+function closeChangeLog(){document.getElementById('clog-ov').style.display='none';}
+function clearChangeLog(){
+  if(!confirm('Clear all change history?'))return;
+  localStorage.removeItem('irrigChangeLog');
+  renderChangeLog();
+}
+function renderChangeLog(){
+  const el=document.getElementById('clog-body');
+  const cl=JSON.parse(localStorage.getItem('irrigChangeLog')||'[]');
+  if(!cl.length){el.innerHTML='<div class="log-empty">No changes recorded yet.</div>';return;}
+  const days={};
+  cl.forEach(e=>{
+    const d=new Date(e.ts*1000);
+    const dk=d.getFullYear()*10000+(d.getMonth()+1)*100+d.getDate();
+    const dl=d.toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+    if(!days[dk])days[dk]={label:dl,entries:[]};
+    days[dk].entries.push(e);
+  });
+  const sortedDays=Object.keys(days).sort((a,b)=>b-a);
+  const prNames=['Morning','Afternoon'];
+  let html='';
+  sortedDays.forEach((dk,di)=>{
+    const day=days[dk];
+    const entries=[...day.entries].reverse();
+    const open=di===0;
+    html+='<div class="log-day">'+
+      '<button class="log-day-btn" onclick="toggleLogSection(this)">'+(open?'▾':'▸')+' '+day.label+'</button>'+
+      '<div class="log-day-content" style="display:'+(open?'block':'none')+';">';
+    entries.forEach(e=>{
+      const t=new Date(e.ts*1000);
+      const ts=t.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+      const prog=prNames[e.pr]||'Prog '+e.pr;
+      html+='<div class="log-entry">'+
+        '<span class="log-zone">'+esc(e.name)+'</span>'+
+        '<span style="font-size:.68rem;color:#94a3b8;white-space:nowrap">'+prog+'</span>'+
+        '<span class="log-dur" style="color:'+(e.val<e.old?'#f87171':'#22c55e')+'">'+
+          fmtDur(e.old)+' &#8594; '+fmtDur(e.val)+
+        '</span>'+
+        '<span class="log-time">'+ts+'</span>'+
+      '</div>';
+    });
+    html+='</div></div>';
+  });
+  el.innerHTML=html;
+}
+
+async function downloadLogs(){
+  const btn=document.getElementById('dl-btn');
+  btn.disabled=true;
+  try{
+    const [hist,wlog,tlog]=await Promise.all([
+      fetch('/history').then(r=>r.json()),
+      fetch('/weatherlog').then(r=>r.json()),
+      fetch('/temphistory').then(r=>r.json())
+    ]);
+    const clog=JSON.parse(localStorage.getItem('irrigChangeLog')||'[]');
+    function csvDate(ep,loc){
+      const d=loc?new Date(ep*1000):new Date((ep+tzSec)*1000);
+      const y=loc?d.getFullYear():d.getUTCFullYear();
+      const mo=String(loc?d.getMonth()+1:d.getUTCMonth()+1).padStart(2,'0');
+      const dy=String(loc?d.getDate():d.getUTCDate()).padStart(2,'0');
+      return y+'-'+mo+'-'+dy;
+    }
+    function csvTime(ep,loc){
+      const d=loc?new Date(ep*1000):new Date((ep+tzSec)*1000);
+      let h=loc?d.getHours():d.getUTCHours();
+      const m=String(loc?d.getMinutes():d.getUTCMinutes()).padStart(2,'0');
+      const ap=h>=12?'PM':'AM';h=h%12||12;
+      return h+':'+m+' '+ap;
+    }
+    function q(s){return'"'+String(s).replace(/"/g,'""')+'"';}
+    function fs(s){const m=Math.floor(s/60),sc=s%60;return m>0?m+'m'+(sc?' '+sc+'s':''):sc+'s';}
+    let csv='';
+    csv+='=== RUN HISTORY ===\r\nDate,Time,Zone,Duration,Trigger\r\n';
+    if(hist.count)[...hist.history].reverse().forEach(e=>{
+      csv+=csvDate(e.start,false)+','+csvTime(e.start,false)+','+q(e.name)+','+fs(e.durationSecs)+','+q(e.trigger)+'\r\n';
+    });
+    csv+='\r\n=== CHANGE LOG ===\r\nDate,Time,Zone,Program,Old Duration,New Duration\r\n';
+    const prN=['Morning','Afternoon'];
+    [...clog].reverse().forEach(e=>{
+      csv+=csvDate(e.ts,true)+','+csvTime(e.ts,true)+','+q(e.name)+','+q(prN[e.pr]||'Prog '+e.pr)+','+fs(e.old)+','+fs(e.val)+'\r\n';
+    });
+    csv+='\r\n=== TEMPERATURE HISTORY ===\r\nDate,Time,Temp (F)\r\n';
+    tlog.forEach(e=>{csv+=csvDate(e.t,false)+','+csvTime(e.t,false)+','+e.f+'\r\n';});
+    csv+='\r\n=== WEATHER LOG ===\r\nDate,Time,Max Temp (F),Precip (mm),Cloud %,Scale %,Status\r\n';
+    wlog.forEach(e=>{
+      if(e.ok)csv+=csvDate(e.t,false)+','+csvTime(e.t,false)+','+e.maxF.toFixed(1)+','+e.precip.toFixed(1)+','+e.cloud+','+e.scale+',OK\r\n';
+      else{const r=e.err===-1?'connect failed':e.err===-2?'JSON error':'HTTP '+e.err;
+        csv+=csvDate(e.t,false)+','+csvTime(e.t,false)+',,,,'+q('Failed: '+r)+'\r\n';}
+    });
+    const now=new Date();
+    const fname='irrigation_logs_'+now.getFullYear()+String(now.getMonth()+1).padStart(2,'0')+String(now.getDate()).padStart(2,'0')+'.csv';
+    const url=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
+    const a=document.createElement('a');a.href=url;a.download=fname;a.click();
+    URL.revokeObjectURL(url);
+  }finally{btn.disabled=false;}
+}
 
 async function openWeatherLog(){
   document.getElementById('wlog-ov').style.display='flex';
