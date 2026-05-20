@@ -78,62 +78,64 @@ int wLogCount = 0, wLogHead = 0;
 
 void saveHistoryLog() {
   File f = LittleFS.open("/hist.bin", "w");
-  if (!f) return;
+  if (!f) { Serial.println("saveHistoryLog: open failed"); return; }
   f.write((uint8_t*)&histHead,  sizeof(histHead));
   f.write((uint8_t*)&histCount, sizeof(histCount));
   f.write((uint8_t*)history,    sizeof(history));
   f.close();
+  Serial.printf("saveHistoryLog: %d entries written\n", histCount);
 }
 
 void saveTempHistory() {
   File f = LittleFS.open("/temp.bin", "w");
-  if (!f) return;
+  if (!f) { Serial.println("saveTempHistory: open failed"); return; }
   f.write((uint8_t*)&tempHistHead,  sizeof(tempHistHead));
   f.write((uint8_t*)&tempHistCount, sizeof(tempHistCount));
   f.write((uint8_t*)tempHist,       sizeof(tempHist));
   f.close();
+  Serial.printf("saveTempHistory: %d entries written\n", tempHistCount);
 }
 
 void saveWeatherLog() {
   File f = LittleFS.open("/wlog.bin", "w");
-  if (!f) return;
+  if (!f) { Serial.println("saveWeatherLog: open failed"); return; }
   f.write((uint8_t*)&wLogHead,  sizeof(wLogHead));
   f.write((uint8_t*)&wLogCount, sizeof(wLogCount));
   f.write((uint8_t*)wLog,       sizeof(wLog));
   f.close();
+  Serial.printf("saveWeatherLog: %d entries written\n", wLogCount);
 }
 
 void loadLogs() {
-  {
-    File f = LittleFS.open("/hist.bin", "r");
-    size_t expect = sizeof(histHead) + sizeof(histCount) + sizeof(history);
-    if (f && f.size() == expect) {
-      f.read((uint8_t*)&histHead,  sizeof(histHead));
-      f.read((uint8_t*)&histCount, sizeof(histCount));
-      f.read((uint8_t*)history,    sizeof(history));
+  // Directory listing for diagnostics
+  File root = LittleFS.open("/");
+  if (root) {
+    File entry = root.openNextFile();
+    if (!entry) Serial.println("LittleFS: filesystem empty");
+    while (entry) {
+      Serial.printf("LittleFS: %s  %u bytes\n", entry.name(), entry.size());
+      entry = root.openNextFile();
     }
-    if (f) f.close();
+    root.close();
   }
-  {
-    File f = LittleFS.open("/temp.bin", "r");
-    size_t expect = sizeof(tempHistHead) + sizeof(tempHistCount) + sizeof(tempHist);
-    if (f && f.size() == expect) {
-      f.read((uint8_t*)&tempHistHead,  sizeof(tempHistHead));
-      f.read((uint8_t*)&tempHistCount, sizeof(tempHistCount));
-      f.read((uint8_t*)tempHist,       sizeof(tempHist));
+
+  auto loadBin = [](const char* path, void* a, size_t sa, void* b, size_t sb, void* c, size_t sc) {
+    File f = LittleFS.open(path, "r");
+    if (!f) { Serial.printf("loadLogs: %s not found\n", path); return; }
+    size_t got = f.size(), expect = sa + sb + sc;
+    if (got != expect) {
+      Serial.printf("loadLogs: %s size mismatch (got %u expect %u)\n", path, got, expect);
+      f.close(); return;
     }
-    if (f) f.close();
-  }
-  {
-    File f = LittleFS.open("/wlog.bin", "r");
-    size_t expect = sizeof(wLogHead) + sizeof(wLogCount) + sizeof(wLog);
-    if (f && f.size() == expect) {
-      f.read((uint8_t*)&wLogHead,  sizeof(wLogHead));
-      f.read((uint8_t*)&wLogCount, sizeof(wLogCount));
-      f.read((uint8_t*)wLog,       sizeof(wLog));
-    }
-    if (f) f.close();
-  }
+    f.read((uint8_t*)a, sa);
+    f.read((uint8_t*)b, sb);
+    f.read((uint8_t*)c, sc);
+    f.close();
+  };
+
+  loadBin("/hist.bin", &histHead, sizeof(histHead), &histCount, sizeof(histCount), history, sizeof(history));
+  loadBin("/temp.bin", &tempHistHead, sizeof(tempHistHead), &tempHistCount, sizeof(tempHistCount), tempHist, sizeof(tempHist));
+  loadBin("/wlog.bin", &wLogHead, sizeof(wLogHead), &wLogCount, sizeof(wLogCount), wLog, sizeof(wLog));
   Serial.printf("Logs loaded: hist=%d temp=%d wlog=%d\n", histCount, tempHistCount, wLogCount);
 }
 
@@ -440,7 +442,7 @@ h1{font-size:1.4rem;font-weight:600;color:#7dd3fc;letter-spacing:.05em;text-tran
 .ptog{width:36px;height:20px;background:#334155;border-radius:20px;border:none;cursor:pointer;position:relative;transition:background .2s;flex-shrink:0}
 .ptog::after{content:'';position:absolute;top:2px;left:2px;width:16px;height:16px;background:#fff;border-radius:50%;transition:transform .2s}
 .ptog.on{background:#0284c7}.ptog.on::after{transform:translateX(16px)}
-.ptime{width:100%;background:#0f172a;border:1px solid #475569;border-radius:.3rem;color:#e2e8f0;padding:.3rem .45rem;font-size:.85rem;margin-bottom:.5rem}
+.ptime{width:100%;background:#0f172a;border:1px solid #475569;border-radius:.3rem;color:#e2e8f0;padding:.3rem .45rem;font-size:.85rem;margin-bottom:.5rem;color-scheme:dark}
 .ptime:focus{outline:none;border-color:#7dd3fc}
 .days{display:flex;gap:.2rem;justify-content:center;margin-bottom:.6rem}
 .day{width:26px;height:26px;border-radius:.25rem;border:1px solid #475569;background:#0f172a;color:#94a3b8;font-size:.72rem;font-weight:700;cursor:pointer;transition:background .15s,color .15s}
@@ -497,7 +499,7 @@ body.light .dlabel,body.light .ep label,body.light .dur-row span,body.light .zto
 body.light .zdurs .dfield:first-child{border-color:#cbd5e1}
 body.light .ptog{background:#94a3b8}
 body.light .ztog{background:#94a3b8}
-body.light .ptime,body.light .dur-row input,body.light .ep input,body.light .modal input{background:#f8fafc;border-color:#94a3b8;color:#1e293b}
+body.light .ptime,body.light .dur-row input,body.light .ep input,body.light .modal input{background:#f8fafc;border-color:#94a3b8;color:#1e293b;color-scheme:light}
 body.light .rnbtn{background:#f8fafc;color:#0369a1;border-color:#93c5fd}
 body.light .rnbtn:hover:not(:disabled){background:#eff6ff}
 body.light .zexpand{border-color:#94a3b8}
@@ -540,8 +542,8 @@ body.light .weather-badge.active{border-color:rgba(3,105,161,.3);background:rgba
 body.light .weather-pct{border-bottom-color:rgba(3,105,161,.4)}
 body.color .weather-badge{color:#38bdf8;border-color:#404040}
 body.color .weather-badge.active{border-color:rgba(56,189,248,.4);background:rgba(56,189,248,.08)}
-.log-ov{position:fixed;inset:0;background:rgba(0,0,0,.7);display:flex;align-items:flex-end;justify-content:center;z-index:200}
-.log-modal{background:#0f172a;border-radius:1rem 1rem 0 0;width:100%;max-width:500px;max-height:90vh;display:flex;flex-direction:column}
+.log-ov{position:fixed;inset:0;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;z-index:200}
+.log-modal{background:#0f172a;border-radius:1rem;width:100%;max-width:500px;max-height:90vh;display:flex;flex-direction:column}
 .log-head{display:flex;align-items:center;justify-content:space-between;padding:.85rem 1rem;border-bottom:1px solid #475569;flex-shrink:0}
 .log-head span{font-size:.88rem;font-weight:600;color:#e2e8f0}
 .log-close{background:none;border:none;color:#94a3b8;cursor:pointer;font-size:1.1rem;line-height:1;padding:.2rem}
@@ -602,8 +604,8 @@ body.light .alloff:hover{background:#fff0f0;border-color:#f87171;color:#b91c1c}
 body.light .dur-preset{background:#f8fafc;border-color:#cbd5e1;color:#0369a1}
 body.light .dur-preset:hover{background:#eff6ff;border-color:#0284c7}
 @media(max-width:400px){.zdurs{grid-template-columns:1fr 1fr}}
-.tg-ov{position:fixed;inset:0;background:rgba(0,0,0,.7);display:flex;align-items:flex-end;justify-content:center;z-index:200}
-.tg-modal{background:#0f172a;border-radius:1rem 1rem 0 0;width:100%;max-width:500px;padding:1rem;box-sizing:border-box}
+.tg-ov{position:fixed;inset:0;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;z-index:200}
+.tg-modal{background:#0f172a;border-radius:1rem;width:100%;max-width:500px;padding:1rem;box-sizing:border-box}
 .tg-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:.75rem}
 .tg-title{font-size:.82rem;font-weight:700;color:#7dd3fc;letter-spacing:.06em;text-transform:uppercase}
 .tg-close{background:none;border:none;color:#94a3b8;font-size:1.3rem;cursor:pointer;line-height:1}
@@ -631,7 +633,7 @@ body.color .ebtn{color:#6b6b6b}
 body.color .dlabel,body.color .ep label,body.color .dur-row span,body.color .ztog-label{color:#f5f5f5;font-weight:600}
 body.color .zdurs .dfield:first-child{border-color:#404040}
 body.color .ebtn:hover{color:#a3a3a3}
-body.color .ptime,body.color .dur-row input,body.color .ep input,body.color .modal input{background:#171717;border-color:#606060;color:#e5e5e5}
+body.color .ptime,body.color .dur-row input,body.color .ep input,body.color .modal input{background:#171717;border-color:#606060;color:#e5e5e5;color-scheme:dark}
 body.color .ep,body.color .zexpand{border-color:#606060}
 body.color .rnbtn{background:#171717;color:#38bdf8;border-color:#3b82f6}
 body.color .rnbtn:hover:not(:disabled){background:#1e3a5f}
@@ -702,25 +704,25 @@ body.color .zday-a.on{background:#3b0764;color:#c4b5fd;border-color:#7c3aed}
   <span class="info-center" id="uptime">Uptime: --</span>
   <span class="info-side" id="chip-temp" onclick="openTempGraph()" style="cursor:pointer;justify-content:flex-end">&#127777; ESP32: --&#176;F</span>
 </div>
-<div class="log-ov" id="log-ov" style="display:none">
+<div class="log-ov" id="log-ov" style="display:none" onclick="if(event.target===this)closeLog()">
   <div class="log-modal">
     <div class="log-head"><span>&#128203; Run History</span><button class="log-close" onclick="closeLog()">&#10005;</button></div>
     <div class="log-body" id="log-body"><div class="log-empty">Loading…</div></div>
   </div>
 </div>
-<div class="log-ov" id="clog-ov" style="display:none">
+<div class="log-ov" id="clog-ov" style="display:none" onclick="if(event.target===this)closeChangeLog()">
   <div class="log-modal">
     <div class="log-head"><span>&#9998; Change History</span><div style="display:flex;align-items:center;gap:.5rem"><button class="log-close" onclick="clearChangeLog()" style="font-size:.75rem;padding:.2rem .55rem;border:1px solid #475569;border-radius:.35rem">Clear</button><button class="log-close" onclick="closeChangeLog()">&#10005;</button></div></div>
     <div class="log-body" id="clog-body"><div class="log-empty">No changes recorded yet.</div></div>
   </div>
 </div>
-<div class="log-ov" id="wlog-ov" style="display:none;align-items:center">
-  <div class="log-modal" style="border-radius:1rem">
+<div class="log-ov" id="wlog-ov" style="display:none" onclick="if(event.target===this)closeWeatherLog()">
+  <div class="log-modal">
     <div class="log-head"><span>&#9729; Weather Log</span><div style="display:flex;align-items:center;gap:.5rem"><button id="wfetch-btn" class="log-close" onclick="manualFetch()" style="font-size:.75rem;padding:.2rem .55rem;border:1px solid #475569;border-radius:.35rem">&#8635; Fetch</button><button class="log-close" onclick="closeWeatherLog()">&#10005;</button></div></div>
     <div class="log-body" id="wlog-body"><div class="log-empty">Loading…</div></div>
   </div>
 </div>
-<div class="tg-ov" id="tg-ov" style="display:none">
+<div class="tg-ov" id="tg-ov" style="display:none" onclick="if(event.target===this)closeTempGraph()">
   <div class="tg-modal">
     <div class="tg-head">
       <span class="tg-title">&#127777; ESP32 Temp History</span>
@@ -731,7 +733,7 @@ body.color .zday-a.on{background:#3b0764;color:#c4b5fd;border-color:#7c3aed}
       <button class="tg-btn" id="tg-week" onclick="setTgView('week')">1 Week</button>
     </div>
     <canvas id="tg-canvas" height="200"></canvas>
-    <div class="tg-note" id="tg-note">Chip die temp &bull; 10-min samples &bull; last 24h &bull; resets on reboot</div>
+    <div class="tg-note" id="tg-note">Chip die temp &bull; 10-min samples &bull; last 24h</div>
   </div>
 </div>
 <div class="modal-ov" id="rn-modal" style="display:none">
@@ -886,8 +888,8 @@ function renderZones(){
         '</div>'+
         '<div class="zdurs">'+durs+'</div>'+
         '<div class="ep'+(epOpen?' open':'')+'" id="ep'+i+'">'+
-          '<div><label>Name</label><input type="text" id="zn'+i+'" value="'+escA(z.name)+'" maxlength="24"></div>'+
-          '<div><label>GPIO Pin</label><input type="number" id="zp'+i+'" value="'+z.pin+'" min="0" max="48"></div>'+
+          '<div><label>Name</label><input type="text" id="zn'+i+'" value="'+(epOpen?(document.getElementById('zn'+i)?.value??escA(z.name)):escA(z.name))+'" maxlength="24"></div>'+
+          '<div><label>GPIO Pin</label><input type="number" id="zp'+i+'" value="'+(epOpen?(document.getElementById('zp'+i)?.value??z.pin):z.pin)+'" min="0" max="48"></div>'+
           '<button class="sbtn" onclick="saveZone('+i+')">Save</button>'+
         '</div>'+
       '</div>';
@@ -971,6 +973,7 @@ async function saveZone(i){
   const pin=parseInt(document.getElementById('zp'+i).value);
   if(isNaN(pin)||pin<0||pin>48)return;
   if(name!==zones[i].name) pushCL({type:'zoneName',zi:i,old:zones[i].name,val:name});
+  if(pin!==zones[i].pin) pushCL({type:'zonePin',zi:i,name:zones[i].name,old:zones[i].pin,val:pin});
   await fetch('/setzone?id='+i+'&name='+encodeURIComponent(name)+'&pin='+pin);
   zones[i].name=name;zones[i].pin=pin;
   editing.delete(i);renderZones();
@@ -1129,6 +1132,8 @@ function renderChangeLog(){
         html+=clRow(zn+esc(e.prog)+'</span>',null,['#22c55e',fmtT(e.old)+' → '+fmtT(e.val)],ts);
       else if(t==='zoneName')
         html+=clRow(zn+esc(e.old)+' → '+esc(e.val)+'</span>','renamed',['#22c55e',''],ts);
+      else if(t==='zonePin')
+        html+=clRow(zn+esc(e.name)+'</span>','GPIO',['#22c55e','pin '+e.old+' → '+e.val],ts);
       else if(t==='coolPct')
         html+=clRow(zn+'Cool day %</span>',null,['#22c55e',e.old+'% → '+e.val+'%'],ts);
     });
@@ -1181,6 +1186,7 @@ async function downloadLogs(){
       else if(t==='progEn'){what=q(e.prog||'');detail=e.val?'enabled':'disabled';}
       else if(t==='progTime'){what=q(e.prog||'');detail=fmtTC(e.old)+' → '+fmtTC(e.val);}
       else if(t==='zoneName'){what=q(e.old+' → '+e.val);detail='renamed';}
+      else if(t==='zonePin'){what=q(e.name||'');detail='GPIO pin '+e.old+' → '+e.val;}
       else if(t==='coolPct'){what='Cool day %';detail=e.old+'% → '+e.val+'%';}
       csv+=csvDate(e.ts,true)+','+csvTime(e.ts,true)+','+t+','+what+','+detail+'\r\n';
     });
@@ -1271,7 +1277,7 @@ async function setTgView(v){
   tgView=v;
   document.getElementById('tg-day').className='tg-btn'+(v==='day'?' active':'');
   document.getElementById('tg-week').className='tg-btn'+(v==='week'?' active':'');
-  document.getElementById('tg-note').textContent='Chip die temp • 10-min samples • '+(v==='day'?'last 24h':'last 7 days')+' • resets on reboot';
+  document.getElementById('tg-note').textContent='Chip die temp • 10-min samples • '+(v==='day'?'last 24h':'last 7 days');
   await refreshTempGraph();
 }
 async function openTempGraph(){
