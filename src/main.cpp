@@ -3,6 +3,7 @@
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 #include <Preferences.h>
+#include <LittleFS.h>
 #include <time.h>
 #include <Adafruit_NeoPixel.h>
 #include <HTTPClient.h>
@@ -69,15 +70,79 @@ time_t  lastWeatherAttempt = 0;
 bool    pendingWeatherFetch = false;
 
 #define WEATHER_LOG_MAX 7
-struct WeatherLogEntry { time_t t; float maxF, precip, cloud; uint8_t scale; bool ok; int16_t errCode; };
+struct WeatherLogEntry { time_t t; float maxF, precip, cloud; uint8_t scale; bool ok; int16_t errCode; bool manual; };
 WeatherLogEntry wLog[WEATHER_LOG_MAX];
 int wLogCount = 0, wLogHead = 0;
 
-void pushWeatherLog(time_t t, float maxF, float precip, float cloud, uint8_t scale, bool ok, int16_t errCode = 0) {
+// ── Log persistence (LittleFS) ────────────────────────────────────────────────
+
+void saveHistoryLog() {
+  File f = LittleFS.open("/hist.bin", "w");
+  if (!f) return;
+  f.write((uint8_t*)&histHead,  sizeof(histHead));
+  f.write((uint8_t*)&histCount, sizeof(histCount));
+  f.write((uint8_t*)history,    sizeof(history));
+  f.close();
+}
+
+void saveTempHistory() {
+  File f = LittleFS.open("/temp.bin", "w");
+  if (!f) return;
+  f.write((uint8_t*)&tempHistHead,  sizeof(tempHistHead));
+  f.write((uint8_t*)&tempHistCount, sizeof(tempHistCount));
+  f.write((uint8_t*)tempHist,       sizeof(tempHist));
+  f.close();
+}
+
+void saveWeatherLog() {
+  File f = LittleFS.open("/wlog.bin", "w");
+  if (!f) return;
+  f.write((uint8_t*)&wLogHead,  sizeof(wLogHead));
+  f.write((uint8_t*)&wLogCount, sizeof(wLogCount));
+  f.write((uint8_t*)wLog,       sizeof(wLog));
+  f.close();
+}
+
+void loadLogs() {
+  {
+    File f = LittleFS.open("/hist.bin", "r");
+    size_t expect = sizeof(histHead) + sizeof(histCount) + sizeof(history);
+    if (f && f.size() == expect) {
+      f.read((uint8_t*)&histHead,  sizeof(histHead));
+      f.read((uint8_t*)&histCount, sizeof(histCount));
+      f.read((uint8_t*)history,    sizeof(history));
+    }
+    if (f) f.close();
+  }
+  {
+    File f = LittleFS.open("/temp.bin", "r");
+    size_t expect = sizeof(tempHistHead) + sizeof(tempHistCount) + sizeof(tempHist);
+    if (f && f.size() == expect) {
+      f.read((uint8_t*)&tempHistHead,  sizeof(tempHistHead));
+      f.read((uint8_t*)&tempHistCount, sizeof(tempHistCount));
+      f.read((uint8_t*)tempHist,       sizeof(tempHist));
+    }
+    if (f) f.close();
+  }
+  {
+    File f = LittleFS.open("/wlog.bin", "r");
+    size_t expect = sizeof(wLogHead) + sizeof(wLogCount) + sizeof(wLog);
+    if (f && f.size() == expect) {
+      f.read((uint8_t*)&wLogHead,  sizeof(wLogHead));
+      f.read((uint8_t*)&wLogCount, sizeof(wLogCount));
+      f.read((uint8_t*)wLog,       sizeof(wLog));
+    }
+    if (f) f.close();
+  }
+  Serial.printf("Logs loaded: hist=%d temp=%d wlog=%d\n", histCount, tempHistCount, wLogCount);
+}
+
+void pushWeatherLog(time_t t, float maxF, float precip, float cloud, uint8_t scale, bool ok, int16_t errCode = 0, bool manual = false) {
   int idx = (wLogHead + wLogCount) % WEATHER_LOG_MAX;
-  wLog[idx] = {t, maxF, precip, cloud, scale, ok, errCode};
+  wLog[idx] = {t, maxF, precip, cloud, scale, ok, errCode, manual};
   if (wLogCount < WEATHER_LOG_MAX) wLogCount++;
   else wLogHead = (wLogHead + 1) % WEATHER_LOG_MAX;
+  saveWeatherLog();
 }
 
 Preferences    prefs;
@@ -90,6 +155,7 @@ void addTempSample(time_t t, float c) {
   tempHist[idx] = {t, c};
   if (tempHistCount < TEMP_HIST_MAX) tempHistCount++;
   else tempHistHead = (tempHistHead + 1) % TEMP_HIST_MAX;
+  saveTempHistory();
 }
 
 // ── Queue ─────────────────────────────────────────────────────────────────────
@@ -170,6 +236,7 @@ void addHistory(HistoryEntry e) {
     history[(histHead + histCount) % HISTORY_MAX] = e;
     histCount++;
   }
+  saveHistoryLog();
 }
 
 // requireZone >= 0 stops only if that zone is currently active; -1 stops whatever is active.
@@ -259,23 +326,30 @@ void saveConfig() {
 
 // ── Weather ───────────────────────────────────────────────────────────────────
 
-void fetchWeather() {
+void fetchWeather(bool manual = false) {
   time_t now; time(&now);
   lastWeatherAttempt = now;
-  WiFiClientSecure client; client.setInsecure();
-  HTTPClient http;
   String url = String("https://api.open-meteo.com/v1/forecast?latitude=") +
                String(WEATHER_LAT, 4) + "&longitude=" + String(WEATHER_LON, 4) +
                "&daily=temperature_2m_max,precipitation_sum,cloud_cover_mean"
                "&forecast_days=1&timezone=America%2FLos_Angeles";
-  if (!http.begin(client, url)) { http.end(); weatherFetchOk = false; pushWeatherLog(now,0,0,0,0,false,-1); return; }
-  int code = http.GET();
-  if (code != 200) { Serial.printf("Weather fetch failed: %d\n", code); http.end(); weatherFetchOk = false; pushWeatherLog(now,0,0,0,0,false,(int16_t)code); return; }
-  String body = http.getString();
-  http.end();
+  int code = 0;
+  String body;
+  for (int attempt = 0; attempt < 2; attempt++) {
+    if (attempt > 0) delay(3000);
+    WiFiClientSecure client; client.setInsecure();
+    HTTPClient http;
+    if (!http.begin(client, url)) { http.end(); code = -1; break; }
+    code = http.GET();
+    if (code == 200) { body = http.getString(); http.end(); break; }
+    http.end();
+    Serial.printf("Weather fetch attempt %d failed: %d\n", attempt + 1, code);
+    if (code != -11) break; // only retry on read timeout
+  }
+  if (code != 200) { weatherFetchOk = false; pushWeatherLog(now,0,0,0,0,false,(int16_t)code,manual); return; }
   JsonDocument doc;
   DeserializationError err = deserializeJson(doc, body);
-  if (err) { Serial.printf("Weather JSON error: %s\n", err.c_str()); weatherFetchOk = false; pushWeatherLog(now,0,0,0,0,false,-2); return; }
+  if (err) { Serial.printf("Weather JSON error: %s\n", err.c_str()); weatherFetchOk = false; pushWeatherLog(now,0,0,0,0,false,-2,manual); return; }
   float maxC  = doc["daily"]["temperature_2m_max"][0] | 100.0f;
   float precip= doc["daily"]["precipitation_sum"][0]  | 0.0f;
   float cloud = doc["daily"]["cloud_cover_mean"][0]   | 0.0f;
@@ -284,7 +358,7 @@ void fetchWeather() {
   weatherScale = cool ? coolDayPct : 100;
   weatherFetchOk = true;
   lastWeatherFetch = now;
-  pushWeatherLog(now, maxF, precip, cloud, weatherScale, true);
+  pushWeatherLog(now, maxF, precip, cloud, weatherScale, true, 0, manual);
   Serial.printf("Weather: %.1f°F %.1fmm %.0f%% cloud → scale %d%%\n", maxF, precip, cloud, weatherScale);
 }
 
@@ -707,7 +781,7 @@ function renderWeather(scale, pct, fetchOk){
   const badge=document.getElementById('weather-badge');
   const dot=document.getElementById('weather-dot');
   const inp=document.getElementById('cool-pct-input');
-  if(inp) inp.value=pct;
+  if(inp){inp.value=pct;inp.dataset.saved=pct;}
   if(badge) badge.classList.toggle('active', scale<100);
   if(dot){
     if(fetchOk===true) dot.style.background='#22c55e';
@@ -717,8 +791,12 @@ function renderWeather(scale, pct, fetchOk){
 }
 
 async function saveCoolPct(){
-  const v=parseInt(document.getElementById('cool-pct-input').value,10);
+  const inp=document.getElementById('cool-pct-input');
+  const v=parseInt(inp.value,10);
   if(isNaN(v)||v<10||v>90) return;
+  const old=parseInt(inp.dataset.saved||v,10);
+  if(v!==old) pushCL({type:'coolPct',old,val:v});
+  inp.dataset.saved=v;
   await fetch('/setcoolpct?pct='+v);
 }
 
@@ -818,13 +896,16 @@ function renderZones(){
 }
 
 async function togglePDay(pi,di){
+  const oldBit=(daysSel['p'+pi]>>di)&1;
   daysSel['p'+pi]^=(1<<di);
+  pushCL({type:'progDay',pi,prog:programs[pi].name,day:di,val:oldBit^1});
   renderPrograms();
   await fetch('/setprogram?id='+pi+'&en='+(programs[pi].enabled?1:0)+'&h='+programs[pi].h+'&m='+programs[pi].m+'&days='+daysSel['p'+pi]);
 }
 
 async function toggleProg(i){
   programs[i].enabled=!programs[i].enabled;
+  pushCL({type:'progEn',pi:i,prog:programs[i].name,val:programs[i].enabled});
   await fetch('/setprogram?id='+i+'&en='+(programs[i].enabled?1:0)+'&h='+programs[i].h+'&m='+programs[i].m+'&days='+(daysSel['p'+i]??programs[i].days));
   render();
 }
@@ -833,6 +914,8 @@ async function saveProg(i){
   const t=document.getElementById('pt'+i).value;
   const[h,m]=t?t.split(':').map(Number):[programs[i].h,programs[i].m];
   const days=daysSel['p'+i]??programs[i].days;
+  if(h!==programs[i].h||m!==programs[i].m)
+    pushCL({type:'progTime',pi:i,prog:programs[i].name,old:pad(programs[i].h)+':'+pad(programs[i].m),val:pad(h)+':'+pad(m)});
   await fetch('/setprogram?id='+i+'&en='+(programs[i].enabled?1:0)+'&h='+h+'&m='+m+'&days='+days);
   programs[i].h=h;programs[i].m=m;programs[i].days=days;
   render();
@@ -852,17 +935,19 @@ async function toggleZone(i){
   schedFetch();
 }
 
+function pushCL(e){
+  e.ts=Math.floor(Date.now()/1000);
+  const cl=JSON.parse(localStorage.getItem('irrigChangeLog')||'[]');
+  cl.push(e);
+  if(cl.length>500)cl.splice(0,cl.length-500);
+  localStorage.setItem('irrigChangeLog',JSON.stringify(cl));
+}
 async function saveDur(zi,pr){
   const m=parseInt(document.getElementById('durM'+zi+'_'+pr).value)||0;
   const s=parseInt(document.getElementById('durS'+zi+'_'+pr).value)||0;
   const val=m*60+s;
   const old=zones[zi].durations[pr];
-  if(val!==old){
-    const cl=JSON.parse(localStorage.getItem('irrigChangeLog')||'[]');
-    cl.push({ts:Math.floor(Date.now()/1000),zi,name:zones[zi].name,pr,old,val});
-    if(cl.length>500)cl.splice(0,cl.length-500);
-    localStorage.setItem('irrigChangeLog',JSON.stringify(cl));
-  }
+  if(val!==old) pushCL({type:'duration',zi,name:zones[zi].name,pr,old,val});
   zones[zi].durations[pr]=val;
   renderZones();
   await fetch('/setzone?id='+zi+'&d'+pr+'='+val);
@@ -873,7 +958,9 @@ function toggleExpand(i){toggleSet(expanded,i);}
 async function toggleZDay(zi,pr,day){
   const z=zones[zi];
   if(!z.zdays)z.zdays=[0x7F,0x7F];
-  z.zdays[pr]=(z.zdays[pr]!==undefined?z.zdays[pr]:0x7F)^(1<<day);
+  const oldMask=z.zdays[pr]!==undefined?z.zdays[pr]:0x7F;
+  z.zdays[pr]=oldMask^(1<<day);
+  pushCL({type:'zoneDay',zi,name:z.name,pr,day,val:(z.zdays[pr]>>day)&1});
   renderZones();
   await fetch('/setzone?id='+zi+'&zd'+pr+'='+z.zdays[pr]);
 }
@@ -883,6 +970,7 @@ async function saveZone(i){
   const name=(document.getElementById('zn'+i).value.trim())||zones[i].name;
   const pin=parseInt(document.getElementById('zp'+i).value);
   if(isNaN(pin)||pin<0||pin>48)return;
+  if(name!==zones[i].name) pushCL({type:'zoneName',zi:i,old:zones[i].name,val:name});
   await fetch('/setzone?id='+i+'&name='+encodeURIComponent(name)+'&pin='+pin);
   zones[i].name=name;zones[i].pin=pin;
   editing.delete(i);renderZones();
@@ -958,10 +1046,8 @@ async function openLog(){
   const days={};
   data.history.forEach(e=>{
     const dk=dayKey(e.start);
-    if(!days[dk])days[dk]={label:fmtDayLabel(e.start),progs:{}};
-    const t=e.trigger;
-    if(!days[dk].progs[t])days[dk].progs[t]=[];
-    days[dk].progs[t].push(e);
+    if(!days[dk])days[dk]={label:fmtDayLabel(e.start),entries:[]};
+    days[dk].entries.push(e);
   });
   const sortedDays=Object.keys(days).sort((a,b)=>b-a);
   let html='';
@@ -971,18 +1057,16 @@ async function openLog(){
     html+='<div class="log-day">'+
       '<button class="log-day-btn" onclick="toggleLogSection(this)">'+(dayOpen?'▾':'▸')+' '+day.label+'</button>'+
       '<div class="log-day-content" style="display:'+(dayOpen?'block':'none')+';">';
-    Object.keys(day.progs).forEach(trig=>{
-      html+='<div class="log-prog">'+
-        '<button class="log-prog-btn" onclick="toggleLogSection(this)">▾ '+trig+'</button>'+
-        '<div class="log-prog-content">';
-      day.progs[trig].forEach(e=>{
-        html+='<div class="log-entry">'+
-          '<span class="log-zone">'+esc(e.name)+'</span>'+
-          '<span class="log-dur">'+fmtDur(e.durationSecs)+'</span>'+
-          '<span class="log-time">'+fmtTime(e.start)+'</span>'+
-        '</div>';
-      });
-      html+='</div></div>';
+    day.entries.forEach(e=>{
+      const trig=e.trigger;
+      const badge=trig==='Manual'
+        ?'<span style="font-size:.65rem;background:#1e40af;color:#93c5fd;border-radius:.25rem;padding:.05rem .3rem;margin-left:.3rem">Manual</span>'
+        :'<span style="font-size:.65rem;background:#1e293b;color:#94a3b8;border-radius:.25rem;padding:.05rem .3rem;margin-left:.3rem">'+esc(trig)+'</span>';
+      html+='<div class="log-entry">'+
+        '<span class="log-zone">'+esc(e.name)+badge+'</span>'+
+        '<span class="log-dur">'+fmtDur(e.durationSecs)+'</span>'+
+        '<span class="log-time">'+fmtTime(e.start)+'</span>'+
+      '</div>';
     });
     html+='</div></div>';
   });
@@ -1013,7 +1097,14 @@ function renderChangeLog(){
     days[dk].entries.push(e);
   });
   const sortedDays=Object.keys(days).sort((a,b)=>b-a);
-  const prNames=['Morning','Afternoon'];
+  const prN=['Morning','Afternoon'];
+  const DN=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  function fmtT(hm){const[h,m]=hm.split(':').map(Number);const ap=h>=12?'PM':'AM';const h12=h%12||12;return h12+':'+(m<10?'0':'')+m+' '+ap;}
+  function clRow(left,mid,right,ts){
+    return '<div class="log-entry">'+left+(mid?'<span style="font-size:.68rem;color:#94a3b8;white-space:nowrap">'+mid+'</span>':'')+
+      '<span class="log-dur" style="color:'+right[0]+'">'+right[1]+'</span>'+
+      '<span class="log-time">'+ts+'</span></div>';
+  }
   let html='';
   sortedDays.forEach((dk,di)=>{
     const day=days[dk];
@@ -1023,17 +1114,23 @@ function renderChangeLog(){
       '<button class="log-day-btn" onclick="toggleLogSection(this)">'+(open?'▾':'▸')+' '+day.label+'</button>'+
       '<div class="log-day-content" style="display:'+(open?'block':'none')+';">';
     entries.forEach(e=>{
-      const t=new Date(e.ts*1000);
-      const ts=t.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
-      const prog=prNames[e.pr]||'Prog '+e.pr;
-      html+='<div class="log-entry">'+
-        '<span class="log-zone">'+esc(e.name)+'</span>'+
-        '<span style="font-size:.68rem;color:#94a3b8;white-space:nowrap">'+prog+'</span>'+
-        '<span class="log-dur" style="color:'+(e.val<e.old?'#f87171':'#22c55e')+'">'+
-          fmtDur(e.old)+' &#8594; '+fmtDur(e.val)+
-        '</span>'+
-        '<span class="log-time">'+ts+'</span>'+
-      '</div>';
+      const ts=new Date(e.ts*1000).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+      const t=e.type||'duration';
+      const zn='<span class="log-zone">';
+      if(t==='duration')
+        html+=clRow(zn+esc(e.name)+'</span>',prN[e.pr]||'Prog '+e.pr,[e.val<e.old?'#f87171':'#22c55e',fmtDur(e.old)+' → '+fmtDur(e.val)],ts);
+      else if(t==='zoneDay')
+        html+=clRow(zn+esc(e.name)+'</span>',prN[e.pr]+' · '+DN[e.day],[e.val?'#22c55e':'#f87171',e.val?'on':'off'],ts);
+      else if(t==='progDay')
+        html+=clRow(zn+esc(e.prog)+'</span>',DN[e.day],[e.val?'#22c55e':'#f87171',e.val?'on':'off'],ts);
+      else if(t==='progEn')
+        html+=clRow(zn+esc(e.prog)+'</span>',null,[e.val?'#22c55e':'#f87171',e.val?'enabled':'disabled'],ts);
+      else if(t==='progTime')
+        html+=clRow(zn+esc(e.prog)+'</span>',null,['#22c55e',fmtT(e.old)+' → '+fmtT(e.val)],ts);
+      else if(t==='zoneName')
+        html+=clRow(zn+esc(e.old)+' → '+esc(e.val)+'</span>','renamed',['#22c55e',''],ts);
+      else if(t==='coolPct')
+        html+=clRow(zn+'Cool day %</span>',null,['#22c55e',e.old+'% → '+e.val+'%'],ts);
     });
     html+='</div></div>';
   });
@@ -1071,18 +1168,30 @@ async function downloadLogs(){
     if(hist.count)[...hist.history].reverse().forEach(e=>{
       csv+=csvDate(e.start,false)+','+csvTime(e.start,false)+','+q(e.name)+','+fs(e.durationSecs)+','+q(e.trigger)+'\r\n';
     });
-    csv+='\r\n=== CHANGE LOG ===\r\nDate,Time,Zone,Program,Old Duration,New Duration\r\n';
-    const prN=['Morning','Afternoon'];
+    csv+='\r\n=== CHANGE LOG ===\r\nDate,Time,Type,What,Detail\r\n';
+    const prNC=['Morning','Afternoon'];
+    const DNC=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+    function fmtTC(hm){const[h,m]=hm.split(':').map(Number);const ap=h>=12?'PM':'AM';const h12=h%12||12;return h12+':'+(m<10?'0':'')+m+' '+ap;}
     [...clog].reverse().forEach(e=>{
-      csv+=csvDate(e.ts,true)+','+csvTime(e.ts,true)+','+q(e.name)+','+q(prN[e.pr]||'Prog '+e.pr)+','+fs(e.old)+','+fs(e.val)+'\r\n';
+      const t=e.type||'duration';
+      let what='',detail='';
+      if(t==='duration'){what=q((e.name||'')+(e.pr!=null?' · '+prNC[e.pr]:''));detail=fs(e.old)+' → '+fs(e.val);}
+      else if(t==='zoneDay'){what=q((e.name||'')+(e.pr!=null?' · '+prNC[e.pr]:'')+' · '+DNC[e.day]);detail=e.val?'on':'off';}
+      else if(t==='progDay'){what=q((e.prog||'')+' · '+DNC[e.day]);detail=e.val?'on':'off';}
+      else if(t==='progEn'){what=q(e.prog||'');detail=e.val?'enabled':'disabled';}
+      else if(t==='progTime'){what=q(e.prog||'');detail=fmtTC(e.old)+' → '+fmtTC(e.val);}
+      else if(t==='zoneName'){what=q(e.old+' → '+e.val);detail='renamed';}
+      else if(t==='coolPct'){what='Cool day %';detail=e.old+'% → '+e.val+'%';}
+      csv+=csvDate(e.ts,true)+','+csvTime(e.ts,true)+','+t+','+what+','+detail+'\r\n';
     });
     csv+='\r\n=== TEMPERATURE HISTORY ===\r\nDate,Time,Temp (F)\r\n';
     tlog.forEach(e=>{csv+=csvDate(e.t,false)+','+csvTime(e.t,false)+','+e.f+'\r\n';});
-    csv+='\r\n=== WEATHER LOG ===\r\nDate,Time,Max Temp (F),Precip (mm),Cloud %,Scale %,Status\r\n';
+    csv+='\r\n=== WEATHER LOG ===\r\nDate,Time,Type,Max Temp (F),Precip (mm),Cloud %,Scale %,Status\r\n';
     wlog.forEach(e=>{
-      if(e.ok)csv+=csvDate(e.t,false)+','+csvTime(e.t,false)+','+e.maxF.toFixed(1)+','+e.precip.toFixed(1)+','+e.cloud+','+e.scale+',OK\r\n';
+      const typ=e.manual?'Manual':'Auto';
+      if(e.ok)csv+=csvDate(e.t,false)+','+csvTime(e.t,false)+','+typ+','+e.maxF.toFixed(1)+','+e.precip.toFixed(1)+','+e.cloud+','+e.scale+',OK\r\n';
       else{const r=e.err===-1?'connect failed':e.err===-2?'JSON error':'HTTP '+e.err;
-        csv+=csvDate(e.t,false)+','+csvTime(e.t,false)+',,,,'+q('Failed: '+r)+'\r\n';}
+        csv+=csvDate(e.t,false)+','+csvTime(e.t,false)+','+typ+',,,'+q('Failed: '+r)+'\r\n';}
     });
     const now=new Date();
     const fname='irrigation_logs_'+now.getFullYear()+String(now.getMonth()+1).padStart(2,'0')+String(now.getDate()).padStart(2,'0')+'.csv';
@@ -1106,12 +1215,13 @@ async function loadWeatherLog(){
     const d=new Date(e.t*1000);
     const ds=d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
     const ts=d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+    const manBadge=e.manual?'<span style="font-size:.65rem;background:#1e40af;color:#93c5fd;border-radius:.25rem;padding:.05rem .3rem;margin-left:.3rem">Manual</span>':'';
     if(!e.ok){
       const reason=e.err===-1?'connect failed':e.err===-2?'JSON error':'HTTP '+e.err;
-      html+='<div class="log-entry"><div class="log-zone" style="color:#f87171">&#9888; Fetch failed</div><div class="log-time" style="display:flex;flex-direction:column;align-items:flex-end;gap:.1rem"><span style="font-size:.7rem;color:#f87171">'+reason+'</span><span>'+ds+' '+ts+'</span></div></div>';
+      html+='<div class="log-entry"><div class="log-zone" style="color:#f87171">&#9888; Fetch failed'+manBadge+'</div><div class="log-time" style="display:flex;flex-direction:column;align-items:flex-end;gap:.1rem"><span style="font-size:.7rem;color:#f87171">'+reason+'</span><span>'+ds+' '+ts+'</span></div></div>';
     } else {
       html+='<div class="log-entry">'+
-        '<div class="log-zone">'+ds+' '+ts+'</div>'+
+        '<div class="log-zone">'+ds+' '+ts+manBadge+'</div>'+
         '<div style="font-size:.72rem;color:#94a3b8">'+e.maxF.toFixed(1)+'&#176;F &middot; '+e.precip.toFixed(1)+'mm &middot; '+e.cloud+'% cloud</div>'+
         '<div class="log-dur" style="color:'+(e.scale<100?'#a78bfa':'#22c55e')+'">'+e.scale+'% water</div>'+
         '</div>';
@@ -1254,7 +1364,9 @@ void setup() {
   led.show();
 
 
+  if (!LittleFS.begin(true)) Serial.println("LittleFS mount failed — logs will not persist");
   loadConfig();
+  loadLogs();
 
   for (int i = 0; i < NUM_ZONES; i++) {
     pinMode(relayPins[i], OUTPUT);
@@ -1335,7 +1447,7 @@ void setup() {
       int idx = (wLogHead + i) % WEATHER_LOG_MAX;
       if (i < wLogCount - 1) j += ",";
       WeatherLogEntry& e = wLog[idx];
-      j += "{\"t\":" + String((long)e.t) + ",\"ok\":" + (e.ok ? "true" : "false");
+      j += "{\"t\":" + String((long)e.t) + ",\"ok\":" + (e.ok ? "true" : "false") + ",\"manual\":" + (e.manual ? "true" : "false");
       if (e.ok) j += ",\"maxF\":" + String(e.maxF, 1) + ",\"precip\":" + String(e.precip, 1) + ",\"cloud\":" + String(e.cloud, 0) + ",\"scale\":" + String(e.scale);
       if (!e.ok) j += ",\"err\":" + String(e.errCode);
       j += "}";
@@ -1435,6 +1547,7 @@ void setup() {
       historyDays = (uint8_t)constrain(req->getParam("days")->value().toInt(), 1, 90);
       saveConfig();
       purgeHistory();
+      saveHistoryLog();
       Serial.printf("History retain set to %d days\n", historyDays);
     }
     req->send(200, "text/plain", "ok");
@@ -1481,7 +1594,7 @@ void loop() {
     lastWifiRetry = now_ms;
     WiFi.reconnect();
   }
-  if (pendingWeatherFetch) { pendingWeatherFetch = false; fetchWeather(); }
+  if (pendingWeatherFetch) { pendingWeatherFetch = false; fetchWeather(true); }
   if (now_ms - lastSched >= 15000) {
     lastSched = now_ms;
     checkSchedules();

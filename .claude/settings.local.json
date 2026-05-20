@@ -46,7 +46,8 @@
       "PowerShell(Get-ChildItem -Path \"d:\\\\hans_docs\\\\github\\\\irrigation_control\" -Recurse -Force | Where-Object { $_.Extension -in @\\('.html', '.js', '.css'\\) } | Select-Object -ExpandProperty FullName)",
       "PowerShell(cd \"d:\\\\hans_docs\\\\github\\\\irrigation_control\"; & \"$env:USERPROFILE\\\\.platformio\\\\penv\\\\Scripts\\\\pio.exe\" run 2>&1 | Select-Object -Last 20)",
       "PowerShell(cd \"d:\\\\hans_docs\\\\github\\\\irrigation_control\"; & \"$env:USERPROFILE\\\\.platformio\\\\penv\\\\Scripts\\\\pio.exe\" run 2>&1 | Select-Object -Last 10)",
-      "PowerShell(cd \"d:\\\\hans_docs\\\\github\\\\irrigation_control\"; & \"$env:USERPROFILE\\\\.platformio\\\\penv\\\\Scripts\\\\pio.exe\" run 2>&1 | Select-Object -Last 6)"
+      "PowerShell(cd \"d:\\\\hans_docs\\\\github\\\\irrigation_control\"; & \"$env:USERPROFILE\\\\.platformio\\\\penv\\\\Scripts\\\\pio.exe\" run 2>&1 | Select-Object -Last 6)",
+      "Bash(Select-Object -First 100)"
     ]
   }
 }
