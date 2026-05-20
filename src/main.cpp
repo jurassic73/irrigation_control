@@ -64,7 +64,6 @@ unsigned long lastTempSample = 0;
 
 uint8_t coolDayPct    = 50;   // % to water on cool/overcast days (persisted)
 uint8_t weatherScale  = 100;  // active scale factor — RAM only, resets to 100 on reboot
-bool    weatherFetchOk = false;
 time_t  lastWeatherFetch = 0;
 time_t  lastWeatherAttempt = 0;
 bool    pendingWeatherFetch = false;
@@ -289,8 +288,9 @@ void loadConfig() {
     snprintf(k, sizeof(k), "pm%d", pr); programs[pr].minute  = prefs.getUChar(k,  programs[pr].minute);
     snprintf(k, sizeof(k), "pw%d", pr); programs[pr].days    = prefs.getUChar(k,  programs[pr].days);
   }
-  historyDays = prefs.getUChar("hdays", 7);
-  coolDayPct  = prefs.getUChar("wPct",  50);
+  historyDays     = prefs.getUChar("hdays", 7);
+  coolDayPct      = prefs.getUChar("wPct",  50);
+  lastWeatherFetch= (time_t)prefs.getULong("wFetch", 0);
   uint8_t cfgVer = prefs.getUChar("cfgVer", 0);
   prefs.end();
   if (cfgVer < 2) {
@@ -320,8 +320,9 @@ void saveConfig() {
     snprintf(k, sizeof(k), "pm%d", pr); prefs.putUChar(k,  programs[pr].minute);
     snprintf(k, sizeof(k), "pw%d", pr); prefs.putUChar(k,  programs[pr].days);
   }
-  prefs.putUChar("hdays", historyDays);
-  prefs.putUChar("wPct",  coolDayPct);
+  prefs.putUChar("hdays",  historyDays);
+  prefs.putUChar("wPct",   coolDayPct);
+  prefs.putULong("wFetch", (unsigned long)lastWeatherFetch);
   prefs.putUChar("cfgVer", 2);
   prefs.end();
 }
@@ -348,18 +349,18 @@ void fetchWeather(bool manual = false) {
     Serial.printf("Weather fetch attempt %d failed: %d\n", attempt + 1, code);
     if (code != -11) break; // only retry on read timeout
   }
-  if (code != 200) { weatherFetchOk = false; pushWeatherLog(now,0,0,0,0,false,(int16_t)code,manual); return; }
+  if (code != 200) { pushWeatherLog(now,0,0,0,0,false,(int16_t)code,manual); return; }
   JsonDocument doc;
   DeserializationError err = deserializeJson(doc, body);
-  if (err) { Serial.printf("Weather JSON error: %s\n", err.c_str()); weatherFetchOk = false; pushWeatherLog(now,0,0,0,0,false,-2,manual); return; }
+  if (err) { Serial.printf("Weather JSON error: %s\n", err.c_str()); pushWeatherLog(now,0,0,0,0,false,-2,manual); return; }
   float maxC  = doc["daily"]["temperature_2m_max"][0] | 100.0f;
   float precip= doc["daily"]["precipitation_sum"][0]  | 0.0f;
   float cloud = doc["daily"]["cloud_cover_mean"][0]   | 0.0f;
   float maxF  = maxC * 9.0f / 5.0f + 32.0f;
   bool cool   = (maxF < 65.0f) || (cloud > 80.0f) || (precip > 2.5f);
   weatherScale = cool ? coolDayPct : 100;
-  weatherFetchOk = true;
   lastWeatherFetch = now;
+  prefs.begin("irr", false); prefs.putULong("wFetch", (unsigned long)now); prefs.end();
   pushWeatherLog(now, maxF, precip, cloud, weatherScale, true, 0, manual);
   Serial.printf("Weather: %.1f°F %.1fmm %.0f%% cloud → scale %d%%\n", maxF, precip, cloud, weatherScale);
 }
@@ -775,20 +776,19 @@ async function fetchConfig(){
   activeZone=d.activeZone; queued=d.queued||[];
   initClock(d.epoch);
   if(d.uptime!=null) document.getElementById('uptime').textContent='Uptime: '+fmtUptime(d.uptime);
-  renderWeather(d.weatherScale??100, d.coolDayPct??50, d.weatherFetchOk??null);
+  renderWeather(d.weatherScale??100, d.coolDayPct??50, d.lastWeatherFetch??0);
   render();
 }
 
-function renderWeather(scale, pct, fetchOk){
+function renderWeather(scale, pct, lastFetch){
   const badge=document.getElementById('weather-badge');
   const dot=document.getElementById('weather-dot');
   const inp=document.getElementById('cool-pct-input');
   if(inp){inp.value=pct;inp.dataset.saved=pct;}
   if(badge) badge.classList.toggle('active', scale<100);
   if(dot){
-    if(fetchOk===true) dot.style.background='#22c55e';
-    else if(fetchOk===false) dot.style.background='#f87171';
-    else dot.style.background='#334155';
+    const age=lastFetch?Math.floor(Date.now()/1000)-lastFetch:Infinity;
+    dot.style.background=age<86400?'#22c55e':lastFetch?'#f87171':'#334155';
   }
 }
 
@@ -1430,7 +1430,7 @@ void setup() {
       }
       j += "]}";
     }
-    j += "],\"weatherScale\":" + String(weatherScale) + ",\"coolDayPct\":" + String(coolDayPct) + ",\"weatherFetchOk\":" + String(weatherFetchOk ? "true" : "false") + "}";
+    j += "],\"weatherScale\":" + String(weatherScale) + ",\"coolDayPct\":" + String(coolDayPct) + ",\"lastWeatherFetch\":" + String((long)lastWeatherFetch) + "}";
     req->send(200, "application/json", j);
   });
 
