@@ -1451,7 +1451,7 @@ void setup() {
     const size_t pLen  = prefix.length();
     const size_t total = pLen + sizeof(INDEX_HTML) - 1;
     // Stream prefix then INDEX_HTML without buffering the full 52 KB
-    AsyncWebServerResponse* r = req->beginResponse(200, "text/html",
+    AsyncWebServerResponse* r = req->beginResponse("text/html", total,
       [prefix, pLen](uint8_t* buf, size_t maxLen, size_t index) -> size_t {
         constexpr size_t hLen = sizeof(INDEX_HTML) - 1;
         size_t written = 0;
@@ -1470,7 +1470,7 @@ void setup() {
           }
         }
         return written;
-      }, total);
+      });
     r->addHeader("Cache-Control", "no-cache");
     req->send(r);
   });
