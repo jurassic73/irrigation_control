@@ -25,7 +25,6 @@ static const char* TZ_PACIFIC = "PST8PDT,M3.2.0,M11.1.0";
 
 uint8_t relayPins[NUM_ZONES]      = {4, 5, 6, 7, 15};
 char    relayNames[NUM_ZONES][32] = {"Zone 1","Zone 2","Zone 3","Zone 4","Zone 5"};
-bool    relayState[NUM_ZONES]     = {};
 
 struct WateringProgram { bool enabled; uint8_t hour, minute, days; };
 const char* PROG_NAMES[NUM_PROGRAMS] = {"Morning", "Afternoon"};
@@ -66,7 +65,7 @@ uint8_t coolDayPct    = 50;   // % to water on cool/overcast days (persisted)
 uint8_t weatherScale  = 100;  // active scale factor — RAM only, resets to 100 on reboot
 time_t  lastWeatherFetch = 0;
 time_t  lastWeatherAttempt = 0;
-bool    pendingWeatherFetch = false;
+static TaskHandle_t weatherTaskHandle = NULL;
 
 #define WEATHER_LOG_MAX 7
 struct WeatherLogEntry { time_t t; float maxF, precip, cloud; uint8_t scale; bool ok; int16_t errCode; bool manual; };
@@ -209,7 +208,6 @@ void updateLED() {
 // ── Relay ─────────────────────────────────────────────────────────────────────
 
 void setRelay(int idx, bool on) {
-  relayState[idx] = on;
   bool pinOn = RELAY_ACTIVE_LOW ? !on : on;
   digitalWrite(relayPins[idx], pinOn ? HIGH : LOW);
   updateLED();
@@ -360,7 +358,7 @@ void fetchWeather(bool manual = false) {
   bool cool   = (maxF < 65.0f) || (cloud > 80.0f) || (precip > 2.5f);
   weatherScale = cool ? coolDayPct : 100;
   lastWeatherFetch = now;
-  prefs.begin("irr", false); prefs.putULong("wFetch", (unsigned long)now); prefs.end();
+  { Preferences p; p.begin("irr", false); p.putULong("wFetch", (unsigned long)now); p.end(); }
   pushWeatherLog(now, maxF, precip, cloud, weatherScale, true, 0, manual);
   Serial.printf("Weather: %.1f°F %.1fmm %.0f%% cloud → scale %d%%\n", maxF, precip, cloud, weatherScale);
 }
@@ -771,13 +769,17 @@ function fmtUptime(s){
   return m+'m';
 }
 async function fetchConfig(){
-  const d=await(await fetch('/config')).json();
-  tzSec=d.tzSec; programs=d.programs; zones=d.zones;
-  activeZone=d.activeZone; queued=d.queued||[];
-  initClock(d.epoch);
-  if(d.uptime!=null) document.getElementById('uptime').textContent='Uptime: '+fmtUptime(d.uptime);
-  renderWeather(d.weatherScale??100, d.coolDayPct??50, d.lastWeatherFetch??0);
-  render();
+  try{
+    let d;
+    if(window.__IC){d=window.__IC;delete window.__IC;}
+    else d=await(await fetch('/config')).json();
+    tzSec=d.tzSec; programs=d.programs; zones=d.zones;
+    activeZone=d.activeZone; queued=d.queued||[];
+    initClock(d.epoch);
+    if(d.uptime!=null) document.getElementById('uptime').textContent='Uptime: '+fmtUptime(d.uptime);
+    renderWeather(d.weatherScale??100, d.coolDayPct??50, d.lastWeatherFetch??0);
+    render();
+  }catch(e){}
 }
 
 function renderWeather(scale, pct, lastFetch){
@@ -1238,10 +1240,11 @@ async function loadWeatherLog(){
 async function manualFetch(){
   const btn=document.getElementById('wfetch-btn');
   btn.disabled=true; btn.textContent='…';
-  await fetch('/fetchweather');
-  await new Promise(r=>setTimeout(r,5000));
-  await loadWeatherLog();
-  btn.disabled=false; btn.innerHTML='&#8635; Fetch';
+  try{
+    await fetch('/fetchweather');
+    await new Promise(r=>setTimeout(r,15000));
+    await loadWeatherLog();
+  }finally{btn.disabled=false;btn.innerHTML='&#8635; Fetch';}
 }
 function closeWeatherLog(){document.getElementById('wlog-ov').style.display='none';}
 
@@ -1359,6 +1362,55 @@ setInterval(fetchTemp,30000);
 </html>
 )rawliteral";
 
+// ── Weather task ──────────────────────────────────────────────────────────────
+
+static void weatherTaskFn(void*) {
+  for (;;) {
+    uint32_t notifVal = 0;
+    xTaskNotifyWait(0, 0xFFFFFFFFUL, &notifVal, portMAX_DELAY);
+    fetchWeather(notifVal != 0);
+  }
+}
+
+// ── Config JSON builder ───────────────────────────────────────────────────────
+
+static String buildConfigJson() {
+  time_t now; struct tm ti{};
+  time(&now); localtime_r(&now, &ti);
+  long tzs = ti.tm_isdst > 0 ? (-7L*3600L) : (-8L*3600L);
+  String j; j.reserve(1000);
+  j += "{\"epoch\":" + String((long)now) + ",\"tzSec\":" + String(tzs) + ",\"uptime\":" + String((unsigned long)(millis()/1000));
+  j += ",\"activeZone\":" + String(activeZone) + ",\"queued\":[";
+  for (int i = 0; i < qSize; i++) {
+    if (i) j += ",";
+    j += String(qBuf[(qHead + i) % QUEUE_MAX].zone);
+  }
+  j += "],\"programs\":[";
+  for (int pr = 0; pr < NUM_PROGRAMS; pr++) {
+    if (pr) j += ",";
+    WateringProgram& p = programs[pr];
+    j += "{\"name\":\"" + String(PROG_NAMES[pr]) + "\",\"enabled\":" + (p.enabled?"true":"false") +
+         ",\"h\":" + String(p.hour) + ",\"m\":" + String(p.minute) + ",\"days\":" + String(p.days) + "}";
+  }
+  j += "],\"zones\":[";
+  for (int i = 0; i < NUM_ZONES; i++) {
+    if (i) j += ",";
+    j += "{\"id\":" + String(i) + ",\"name\":\"" + jsonEsc(relayNames[i]) + "\",\"pin\":" + String(relayPins[i]) + ",\"durations\":[";
+    for (int pr = 0; pr < NUM_PROGRAMS; pr++) {
+      if (pr) j += ",";
+      j += String(zoneDuration[i][pr]);
+    }
+    j += "],\"zdays\":[";
+    for (int pr = 0; pr < NUM_PROGRAMS; pr++) {
+      if (pr) j += ",";
+      j += String(zoneDays[i][pr]);
+    }
+    j += "]}";
+  }
+  j += "],\"weatherScale\":" + String(weatherScale) + ",\"coolDayPct\":" + String(coolDayPct) + ",\"lastWeatherFetch\":" + String((long)lastWeatherFetch) + "}";
+  return j;
+}
+
 // ── HTTP handlers + setup ─────────────────────────────────────────────────────
 
 void setup() {
@@ -1391,47 +1443,40 @@ void setup() {
   { time_t t; time(&t); addTempSample(t, temperatureRead()); lastTempSample = millis(); }
 
   server.on("/", HTTP_GET, [](AsyncWebServerRequest* req){
-    AsyncWebServerResponse* r = req->beginResponse(200, "text/html", INDEX_HTML);
+    String prefix;
+    prefix.reserve(700);
+    prefix += "<script>window.__IC=";
+    prefix += buildConfigJson();
+    prefix += ";</script>";
+    const size_t pLen  = prefix.length();
+    const size_t total = pLen + sizeof(INDEX_HTML) - 1;
+    // Stream prefix then INDEX_HTML without buffering the full 52 KB
+    AsyncWebServerResponse* r = req->beginResponse(200, "text/html",
+      [prefix, pLen](uint8_t* buf, size_t maxLen, size_t index) -> size_t {
+        constexpr size_t hLen = sizeof(INDEX_HTML) - 1;
+        size_t written = 0;
+        if (index < pLen) {
+          size_t n = min(maxLen, pLen - index);
+          memcpy(buf, prefix.c_str() + index, n);
+          written += n;
+        }
+        const size_t absPos = index + written;
+        if (absPos >= pLen) {
+          const size_t htmlIdx = absPos - pLen;
+          if (htmlIdx < hLen) {
+            size_t n = min(maxLen - written, hLen - htmlIdx);
+            memcpy(buf + written, INDEX_HTML + htmlIdx, n);
+            written += n;
+          }
+        }
+        return written;
+      }, total);
     r->addHeader("Cache-Control", "no-cache");
     req->send(r);
   });
 
   server.on("/config", HTTP_GET, [](AsyncWebServerRequest* req){
-    time_t now; struct tm ti{};
-    time(&now); localtime_r(&now, &ti);
-    long tzs = ti.tm_isdst > 0 ? (-7L*3600L) : (-8L*3600L);
-
-    String j; j.reserve(1000);
-    j += "{\"epoch\":" + String((long)now) + ",\"tzSec\":" + String(tzs) + ",\"uptime\":" + String((unsigned long)(millis()/1000));
-    j += ",\"activeZone\":" + String(activeZone) + ",\"queued\":[";
-    for (int i = 0; i < qSize; i++) {
-      if (i) j += ",";
-      j += String(qBuf[(qHead + i) % QUEUE_MAX].zone);
-    }
-    j += "],\"programs\":[";
-    for (int pr = 0; pr < NUM_PROGRAMS; pr++) {
-      if (pr) j += ",";
-      WateringProgram& p = programs[pr];
-      j += "{\"name\":\"" + String(PROG_NAMES[pr]) + "\",\"enabled\":" + (p.enabled?"true":"false") +
-           ",\"h\":" + String(p.hour) + ",\"m\":" + String(p.minute) + ",\"days\":" + String(p.days) + "}";
-    }
-    j += "],\"zones\":[";
-    for (int i = 0; i < NUM_ZONES; i++) {
-      if (i) j += ",";
-      j += "{\"id\":" + String(i) + ",\"name\":\"" + jsonEsc(relayNames[i]) + "\",\"pin\":" + String(relayPins[i]) + ",\"durations\":[";
-      for (int pr = 0; pr < NUM_PROGRAMS; pr++) {
-        if (pr) j += ",";
-        j += String(zoneDuration[i][pr]);
-      }
-      j += "],\"zdays\":[";
-      for (int pr = 0; pr < NUM_PROGRAMS; pr++) {
-        if (pr) j += ",";
-        j += String(zoneDays[i][pr]);
-      }
-      j += "]}";
-    }
-    j += "],\"weatherScale\":" + String(weatherScale) + ",\"coolDayPct\":" + String(coolDayPct) + ",\"lastWeatherFetch\":" + String((long)lastWeatherFetch) + "}";
-    req->send(200, "application/json", j);
+    req->send(200, "application/json", buildConfigJson());
   });
 
   server.on("/setcoolpct", HTTP_GET, [](AsyncWebServerRequest* req){
@@ -1443,7 +1488,7 @@ void setup() {
   });
 
   server.on("/fetchweather", HTTP_GET, [](AsyncWebServerRequest* req){
-    pendingWeatherFetch = true;
+    if (weatherTaskHandle) xTaskNotify(weatherTaskHandle, 1UL, eSetValueWithOverwrite);
     req->send(200, "text/plain", "ok");
   });
 
@@ -1589,6 +1634,7 @@ void setup() {
 
   DefaultHeaders::Instance().addHeader("Access-Control-Allow-Origin", "*");
   server.begin();
+  xTaskCreate(weatherTaskFn, "weather", 16384, NULL, 1, &weatherTaskHandle);
 }
 
 void loop() {
@@ -1600,12 +1646,12 @@ void loop() {
     lastWifiRetry = now_ms;
     WiFi.reconnect();
   }
-  if (pendingWeatherFetch) { pendingWeatherFetch = false; fetchWeather(true); }
   if (now_ms - lastSched >= 15000) {
     lastSched = now_ms;
     checkSchedules();
     time_t now; struct tm ti{}; time(&now); localtime_r(&now, &ti);
-    if (ti.tm_hour == 3 && ti.tm_min >= 30 && now - lastWeatherFetch > 43200 && now - lastWeatherAttempt > 1800) fetchWeather();
+    if (ti.tm_hour == 3 && ti.tm_min >= 30 && now - lastWeatherFetch > 43200 && now - lastWeatherAttempt > 1800)
+      if (weatherTaskHandle) xTaskNotify(weatherTaskHandle, 0UL, eSetValueWithOverwrite);
   }
   if (now_ms - lastTempSample >= 600000UL) {
     lastTempSample = now_ms;
