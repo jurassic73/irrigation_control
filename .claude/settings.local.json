@@ -47,7 +47,8 @@
       "PowerShell(cd \"d:\\\\hans_docs\\\\github\\\\irrigation_control\"; & \"$env:USERPROFILE\\\\.platformio\\\\penv\\\\Scripts\\\\pio.exe\" run 2>&1 | Select-Object -Last 20)",
       "PowerShell(cd \"d:\\\\hans_docs\\\\github\\\\irrigation_control\"; & \"$env:USERPROFILE\\\\.platformio\\\\penv\\\\Scripts\\\\pio.exe\" run 2>&1 | Select-Object -Last 10)",
       "PowerShell(cd \"d:\\\\hans_docs\\\\github\\\\irrigation_control\"; & \"$env:USERPROFILE\\\\.platformio\\\\penv\\\\Scripts\\\\pio.exe\" run 2>&1 | Select-Object -Last 6)",
-      "Bash(Select-Object -First 100)"
+      "Bash(Select-Object -First 100)",
+      "Bash(grep -E \"lastTempSample|[0-9]{4,}UL|TEMP_HIST\")"
     ]
   }
 }
