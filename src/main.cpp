@@ -72,6 +72,8 @@ struct WeatherLogEntry { time_t t; float maxF, precip, cloud; uint8_t scale; boo
 WeatherLogEntry wLog[WEATHER_LOG_MAX];
 int wLogCount = 0, wLogHead = 0;
 
+String clJson = "[]";
+
 // ── Log persistence (LittleFS) ────────────────────────────────────────────────
 
 void saveHistoryLog() {
@@ -102,6 +104,13 @@ void saveWeatherLog() {
   f.write((uint8_t*)wLog,       sizeof(wLog));
   f.close();
   Serial.printf("saveWeatherLog: %d entries written\n", wLogCount);
+}
+
+void saveChangeLog() {
+  File f = LittleFS.open("/clog.json", "w");
+  if (!f) { Serial.println("saveChangeLog: open failed"); return; }
+  f.print(clJson);
+  f.close();
 }
 
 void loadLogs() {
@@ -135,6 +144,7 @@ void loadLogs() {
   loadBin("/temp.bin", &tempHistHead, sizeof(tempHistHead), &tempHistCount, sizeof(tempHistCount), tempHist, sizeof(tempHist));
   loadBin("/wlog.bin", &wLogHead, sizeof(wLogHead), &wLogCount, sizeof(wLogCount), wLog, sizeof(wLog));
   Serial.printf("Logs loaded: hist=%d temp=%d wlog=%d\n", histCount, tempHistCount, wLogCount);
+  { File f = LittleFS.open("/clog.json", "r"); if (f) { clJson = f.readString(); f.close(); } }
 }
 
 void pushWeatherLog(time_t t, float maxF, float precip, float cloud, uint8_t scale, bool ok, int16_t errCode = 0, bool manual = false) {
@@ -939,12 +949,9 @@ async function toggleZone(i){
   schedFetch();
 }
 
-function pushCL(e){
+async function pushCL(e){
   e.ts=Math.floor(Date.now()/1000);
-  const cl=JSON.parse(localStorage.getItem('irrigChangeLog')||'[]');
-  cl.push(e);
-  if(cl.length>500)cl.splice(0,cl.length-500);
-  localStorage.setItem('irrigChangeLog',JSON.stringify(cl));
+  await fetch('/pushcl?e='+encodeURIComponent(JSON.stringify(e)));
 }
 async function saveDur(zi,pr){
   const m=parseInt(document.getElementById('durM'+zi+'_'+pr).value)||0;
@@ -1079,19 +1086,20 @@ async function openLog(){
 }
 function closeLog(){document.getElementById('log-ov').style.display='none';}
 
-function openChangeLog(){
+async function openChangeLog(){
   document.getElementById('clog-ov').style.display='flex';
-  renderChangeLog();
+  await renderChangeLog();
 }
 function closeChangeLog(){document.getElementById('clog-ov').style.display='none';}
-function clearChangeLog(){
+async function clearChangeLog(){
   if(!confirm('Clear all change history?'))return;
-  localStorage.removeItem('irrigChangeLog');
+  await fetch('/clearcl');
   renderChangeLog();
 }
-function renderChangeLog(){
+async function renderChangeLog(){
   const el=document.getElementById('clog-body');
-  const cl=JSON.parse(localStorage.getItem('irrigChangeLog')||'[]');
+  el.innerHTML='<div class="log-empty">Loading…</div>';
+  const cl=await fetch('/changelog').then(r=>r.json()).catch(()=>[]);
   if(!cl.length){el.innerHTML='<div class="log-empty">No changes recorded yet.</div>';return;}
   const days={};
   cl.forEach(e=>{
@@ -1148,12 +1156,12 @@ async function downloadLogs(){
   const btn=document.getElementById('dl-btn');
   btn.disabled=true;
   try{
-    const [hist,wlog,tlog]=await Promise.all([
+    const [hist,wlog,tlog,clog]=await Promise.all([
       fetch('/history').then(r=>r.json()),
       fetch('/weatherlog').then(r=>r.json()),
-      fetch('/temphistory').then(r=>r.json())
+      fetch('/temphistory').then(r=>r.json()),
+      fetch('/changelog').then(r=>r.json())
     ]);
-    const clog=JSON.parse(localStorage.getItem('irrigChangeLog')||'[]');
     function csvDate(ep,loc){
       const d=loc?new Date(ep*1000):new Date((ep+tzSec)*1000);
       const y=loc?d.getFullYear():d.getUTCFullYear();
@@ -1601,6 +1609,33 @@ void setup() {
       saveHistoryLog();
       Serial.printf("History retain set to %d days\n", historyDays);
     }
+    req->send(200, "text/plain", "ok");
+  });
+
+  server.on("/changelog", HTTP_GET, [](AsyncWebServerRequest* req){
+    req->send(200, "application/json", clJson);
+  });
+
+  server.on("/pushcl", HTTP_GET, [](AsyncWebServerRequest* req){
+    if (!req->hasParam("e")) { req->send(400); return; }
+    String entry = req->getParam("e")->value();
+    JsonDocument doc;
+    if (deserializeJson(doc, clJson) != DeserializationError::Ok || !doc.is<JsonArray>())
+      doc.to<JsonArray>();
+    JsonArray arr = doc.as<JsonArray>();
+    JsonDocument ed;
+    if (deserializeJson(ed, entry) == DeserializationError::Ok)
+      arr.add(ed.as<JsonVariant>());
+    while ((int)arr.size() > 50) arr.remove(0);
+    clJson = "";
+    serializeJson(doc, clJson);
+    saveChangeLog();
+    req->send(200, "text/plain", "ok");
+  });
+
+  server.on("/clearcl", HTTP_GET, [](AsyncWebServerRequest* req){
+    clJson = "[]";
+    saveChangeLog();
     req->send(200, "text/plain", "ok");
   });
 
