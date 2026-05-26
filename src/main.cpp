@@ -346,8 +346,8 @@ void fetchWeather(bool manual = false) {
                "&forecast_days=1&timezone=America%2FLos_Angeles";
   int code = 0;
   String body;
-  for (int attempt = 0; attempt < 2; attempt++) {
-    if (attempt > 0) delay(3000);
+  for (int attempt = 0; attempt < 4; attempt++) {
+    if (attempt > 0) vTaskDelay(pdMS_TO_TICKS(30UL * 60UL * 1000UL));
     WiFiClientSecure client; client.setInsecure();
     HTTPClient http;
     if (!http.begin(client, url)) { http.end(); code = -1; break; }
@@ -355,7 +355,8 @@ void fetchWeather(bool manual = false) {
     if (code == 200) { body = http.getString(); http.end(); break; }
     http.end();
     Serial.printf("Weather fetch attempt %d failed: %d\n", attempt + 1, code);
-    if (code != -11) break; // only retry on read timeout
+    bool transient = (code == -11) || (code >= 500 && code <= 599);
+    if (!transient) break;
   }
   if (code != 200) { pushWeatherLog(now,0,0,0,0,false,(int16_t)code,manual); return; }
   JsonDocument doc;
@@ -1685,8 +1686,10 @@ void loop() {
     lastSched = now_ms;
     checkSchedules();
     time_t now; struct tm ti{}; time(&now); localtime_r(&now, &ti);
-    if (ti.tm_hour == 3 && ti.tm_min >= 30 && now - lastWeatherFetch > 43200 && now - lastWeatherAttempt > 1800)
-      if (weatherTaskHandle) xTaskNotify(weatherTaskHandle, 0UL, eSetValueWithOverwrite);
+    { int mMin = programs[0].hour * 60 + programs[0].minute;
+      int fMin = ((mMin - 120) + 1440) % 1440;
+      if (ti.tm_hour == fMin/60 && ti.tm_min >= fMin%60 && now - lastWeatherFetch > 43200 && now - lastWeatherAttempt > 1800)
+        if (weatherTaskHandle) xTaskNotify(weatherTaskHandle, 0UL, eSetValueWithOverwrite); }
   }
   if (now_ms - lastTempSample >= 600000UL) {
     lastTempSample = now_ms;
