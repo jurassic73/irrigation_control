@@ -346,19 +346,41 @@ void fetchWeather(bool manual = false) {
                "&forecast_days=1&timezone=America%2FLos_Angeles";
   int code = 0;
   String body;
+  Serial.printf("Weather fetch started (manual=%d, scale currently %d%%)\n", manual, weatherScale);
   for (int attempt = 0; attempt < 4; attempt++) {
-    if (attempt > 0) vTaskDelay(pdMS_TO_TICKS(30UL * 60UL * 1000UL));
+    if (attempt > 0) {
+      Serial.printf("Weather fetch: waiting 30min before retry %d/4\n", attempt + 1);
+      vTaskDelay(pdMS_TO_TICKS(30UL * 60UL * 1000UL));
+    }
+    if (WiFi.status() != WL_CONNECTED) {
+      Serial.printf("Weather fetch attempt %d/4: WiFi down, reconnecting\n", attempt + 1);
+      WiFi.reconnect();
+      for (int w = 0; w < 30 && WiFi.status() != WL_CONNECTED; w++)
+        vTaskDelay(pdMS_TO_TICKS(500));
+      if (WiFi.status() != WL_CONNECTED) {
+        Serial.printf("Weather fetch attempt %d/4: WiFi still down, will retry\n", attempt + 1);
+        code = -1; continue;
+      }
+      Serial.printf("Weather fetch: WiFi reconnected, IP: %s\n", WiFi.localIP().toString().c_str());
+    }
     WiFiClientSecure client; client.setInsecure();
     HTTPClient http;
-    if (!http.begin(client, url)) { http.end(); code = -1; break; }
+    if (!http.begin(client, url)) {
+      http.end(); code = -1;
+      Serial.printf("Weather fetch attempt %d/4: http.begin failed\n", attempt + 1);
+      continue;
+    }
     code = http.GET();
     if (code == 200) { body = http.getString(); http.end(); break; }
     http.end();
-    Serial.printf("Weather fetch attempt %d failed: %d\n", attempt + 1, code);
-    bool transient = (code == -11) || (code >= 500 && code <= 599);
+    Serial.printf("Weather fetch attempt %d/4 failed: code=%d\n", attempt + 1, code);
+    bool transient = (code == -1) || (code == -11) || (code >= 500 && code <= 599);
     if (!transient) break;
   }
-  if (code != 200) { pushWeatherLog(now,0,0,0,0,false,(int16_t)code,manual); return; }
+  if (code != 200) {
+    Serial.printf("Weather fetch failed after all attempts: code=%d\n", code);
+    pushWeatherLog(now,0,0,0,0,false,(int16_t)code,manual); return;
+  }
   JsonDocument doc;
   DeserializationError err = deserializeJson(doc, body);
   if (err) { Serial.printf("Weather JSON error: %s\n", err.c_str()); pushWeatherLog(now,0,0,0,0,false,-2,manual); return; }
@@ -1676,11 +1698,26 @@ void setup() {
 void loop() {
   static unsigned long lastSched = 0;
   static unsigned long lastWifiRetry = 0;
+  static bool wifiWasDown = false;
   unsigned long now_ms = millis();
   runQueue();
-  if (WiFi.status() != WL_CONNECTED && now_ms - lastWifiRetry > 30000) {
-    lastWifiRetry = now_ms;
-    WiFi.reconnect();
+  bool wifiUp = (WiFi.status() == WL_CONNECTED);
+  if (!wifiUp) {
+    if (now_ms - lastWifiRetry > 30000) {
+      lastWifiRetry = now_ms;
+      if (!wifiWasDown) Serial.println("WiFi disconnected — first reconnect attempt");
+      else              Serial.println("WiFi still down — retrying reconnect");
+      wifiWasDown = true;
+      WiFi.reconnect();
+    }
+  } else if (wifiWasDown) {
+    wifiWasDown = false;
+    Serial.printf("WiFi reconnected, IP: %s\n", WiFi.localIP().toString().c_str());
+    time_t t; time(&t);
+    if (t - lastWeatherFetch > 43200 && t - lastWeatherAttempt > 60) {
+      Serial.println("Weather: triggering fetch after WiFi recovery");
+      if (weatherTaskHandle) xTaskNotify(weatherTaskHandle, 0UL, eSetValueWithOverwrite);
+    }
   }
   if (now_ms - lastSched >= 15000) {
     lastSched = now_ms;
@@ -1688,8 +1725,20 @@ void loop() {
     time_t now; struct tm ti{}; time(&now); localtime_r(&now, &ti);
     { int mMin = programs[0].hour * 60 + programs[0].minute;
       int fMin = ((mMin - 120) + 1440) % 1440;
-      if (ti.tm_hour == fMin/60 && ti.tm_min >= fMin%60 && now - lastWeatherFetch > 43200 && now - lastWeatherAttempt > 1800)
-        if (weatherTaskHandle) xTaskNotify(weatherTaskHandle, 0UL, eSetValueWithOverwrite); }
+      bool inWindow = (ti.tm_hour == fMin/60 && ti.tm_min >= fMin%60);
+      bool stale    = (now - lastWeatherFetch > 43200);
+      bool cooldown = (now - lastWeatherAttempt > 1800);
+      if (stale && cooldown) {
+        if (inWindow) {
+          Serial.println("Weather: triggering scheduled pre-program fetch");
+          if (weatherTaskHandle) xTaskNotify(weatherTaskHandle, 0UL, eSetValueWithOverwrite);
+        } else if (now - lastWeatherFetch > 64800) {
+          Serial.printf("Weather: stale >18h, triggering fallback fetch (last %ldh ago)\n",
+                        (long)(now - lastWeatherFetch) / 3600);
+          if (weatherTaskHandle) xTaskNotify(weatherTaskHandle, 0UL, eSetValueWithOverwrite);
+        }
+      }
+    }
   }
   if (now_ms - lastTempSample >= 600000UL) {
     lastTempSample = now_ms;
