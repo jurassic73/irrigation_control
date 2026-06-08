@@ -1268,7 +1268,14 @@ async function downloadLogs(){
     function q(s){return'"'+String(s).replace(/"/g,'""')+'"';}
     function fs(s){const m=Math.floor(s/60),sc=s%60;return m>0?m+'m'+(sc?' '+sc+'s':''):sc+'s';}
     let csv='';
-    csv+='=== RUN HISTORY ===\r\nDate,Time,Zone,Duration,Trigger\r\n';
+    csv+='=== WEATHER LOG ===\r\nDate,Time,Type,Max Temp (F),Precip (mm),Cloud %,Wind (kph),Scale %,Status\r\n';
+    wlog.forEach(e=>{
+      const typ=e.manual?'Manual':'Auto';
+      if(e.ok)csv+=csvDate(e.t,false)+','+csvTime(e.t,false)+','+typ+','+e.maxF.toFixed(1)+','+e.precip.toFixed(1)+','+e.cloud+','+(e.wind!=null?e.wind.toFixed(1):'')+','+e.scale+',OK\r\n';
+      else{const r=e.err===-1?'connect failed':e.err===-2?'JSON error':'HTTP '+e.err;
+        csv+=csvDate(e.t,false)+','+csvTime(e.t,false)+','+typ+',,,,,,'+q('Failed: '+r)+'\r\n';}
+    });
+    csv+='\r\n=== RUN HISTORY ===\r\nDate,Time,Zone,Duration,Trigger\r\n';
     if(hist.count)[...hist.history].reverse().forEach(e=>{
       csv+=csvDate(e.start,false)+','+csvTime(e.start,false)+','+q(e.name)+','+fs(e.durationSecs)+','+q(e.trigger)+'\r\n';
     });
@@ -1292,13 +1299,6 @@ async function downloadLogs(){
     });
     csv+='\r\n=== TEMPERATURE HISTORY ===\r\nDate,Time,Temp (F)\r\n';
     tlog.forEach(e=>{csv+=csvDate(e.t,false)+','+csvTime(e.t,false)+','+e.f+'\r\n';});
-    csv+='\r\n=== WEATHER LOG ===\r\nDate,Time,Type,Max Temp (F),Precip (mm),Cloud %,Wind (kph),Scale %,Status\r\n';
-    wlog.forEach(e=>{
-      const typ=e.manual?'Manual':'Auto';
-      if(e.ok)csv+=csvDate(e.t,false)+','+csvTime(e.t,false)+','+typ+','+e.maxF.toFixed(1)+','+e.precip.toFixed(1)+','+e.cloud+','+(e.wind!=null?e.wind.toFixed(1):'')+','+e.scale+',OK\r\n';
-      else{const r=e.err===-1?'connect failed':e.err===-2?'JSON error':'HTTP '+e.err;
-        csv+=csvDate(e.t,false)+','+csvTime(e.t,false)+','+typ+',,,,,,'+q('Failed: '+r)+'\r\n';}
-    });
     const now=new Date();
     const fname='irrigation_logs_'+now.getFullYear()+String(now.getMonth()+1).padStart(2,'0')+String(now.getDate()).padStart(2,'0')+'.csv';
     const url=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
@@ -1816,16 +1816,26 @@ void loop() {
     { int mMin = programs[0].hour * 60 + programs[0].minute;
       int fMin = ((mMin - 120) + 1440) % 1440;
       bool inWindow = (ti.tm_hour == fMin/60 && ti.tm_min >= fMin%60);
-      bool stale    = (now - lastWeatherFetch > 43200);
-      bool cooldown = (now - lastWeatherAttempt > 1800);
-      if (stale && cooldown) {
-        if (inWindow) {
-          Serial.println("Weather: triggering scheduled pre-program fetch");
-          if (weatherTaskHandle) xTaskNotify(weatherTaskHandle, 0UL, eSetValueWithOverwrite);
-        } else if (now - lastWeatherFetch > 64800) {
-          Serial.printf("Weather: stale >18h, triggering fallback fetch (last %ldh ago)\n",
-                        (long)(now - lastWeatherFetch) / 3600);
-          if (weatherTaskHandle) xTaskNotify(weatherTaskHandle, 0UL, eSetValueWithOverwrite);
+      bool cooldown = (now - lastWeatherAttempt > 900);
+      if (cooldown) {
+        struct tm lastFetchTm{};
+        if (lastWeatherFetch > 0) localtime_r(&lastWeatherFetch, &lastFetchTm);
+        bool notFetchedToday = (lastWeatherFetch == 0 ||
+                                lastFetchTm.tm_year != ti.tm_year ||
+                                lastFetchTm.tm_yday != ti.tm_yday);
+        if (notFetchedToday) {
+          int nowMin = ti.tm_hour * 60 + ti.tm_min;
+          int retryEnd = (fMin + 120) % 1440;
+          bool inRetryZone = (fMin < retryEnd)
+              ? (nowMin >= fMin && nowMin < retryEnd)
+              : (nowMin >= fMin || nowMin < retryEnd);
+          if (inRetryZone) {
+            if (inWindow)
+              Serial.println("Weather: triggering scheduled pre-program fetch");
+            else
+              Serial.printf("Weather: retry fetch (%dm after window open)\n", (nowMin - fMin + 1440) % 1440);
+            if (weatherTaskHandle) xTaskNotify(weatherTaskHandle, 0UL, eSetValueWithOverwrite);
+          }
         }
       }
     }

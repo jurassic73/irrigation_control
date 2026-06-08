@@ -5,3 +5,5 @@
 .vscode/ipch
 src/secrets.h
 src/location.h
+.claude
+
