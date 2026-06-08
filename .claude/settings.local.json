@@ -48,7 +48,15 @@
       "PowerShell(cd \"d:\\\\hans_docs\\\\github\\\\irrigation_control\"; & \"$env:USERPROFILE\\\\.platformio\\\\penv\\\\Scripts\\\\pio.exe\" run 2>&1 | Select-Object -Last 10)",
       "PowerShell(cd \"d:\\\\hans_docs\\\\github\\\\irrigation_control\"; & \"$env:USERPROFILE\\\\.platformio\\\\penv\\\\Scripts\\\\pio.exe\" run 2>&1 | Select-Object -Last 6)",
       "Bash(Select-Object -First 100)",
-      "Bash(grep -E \"lastTempSample|[0-9]{4,}UL|TEMP_HIST\")"
+      "Bash(grep -E \"lastTempSample|[0-9]{4,}UL|TEMP_HIST\")",
+      "PowerShell(Get-PnpDevice -Class Ports -Status OK)",
+      "Bash(curl -s http://192.168.1.252/weatherlog)",
+      "Bash(curl -s http://192.168.1.252/history)",
+      "WebSearch",
+      "PowerShell(Get-ChildItem -Path \"d:\\\\hans_docs\\\\github\\\\irrigation_control\" -Recurse -Directory | Where-Object {$_.Name -eq \"data\"})",
+      "Bash(dir /B d:\\\\hans_docs\\\\github\\\\irrigation_control)",
+      "PowerShell(cd \"d:\\\\hans_docs\\\\github\\\\irrigation_control\"; & \"$env:USERPROFILE\\\\.platformio\\\\penv\\\\Scripts\\\\pio.exe\" run 2>&1 | Select-Object -Last 40)",
+      "PowerShell(cd \"d:\\\\hans_docs\\\\github\\\\irrigation_control\"; & \"$env:USERPROFILE\\\\.platformio\\\\penv\\\\Scripts\\\\pio.exe\" run 2>&1 | Select-Object -Last 8)"
     ]
   }
 }
