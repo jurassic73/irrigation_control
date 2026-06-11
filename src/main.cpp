@@ -66,6 +66,7 @@ uint8_t hotDayPct     = 150;  // % to water on hot/windy days >90°F + >24kph wi
 uint8_t weatherScale  = 100;  // active scale factor — RAM only, resets to 100 on reboot
 time_t  lastWeatherFetch = 0;
 time_t  lastWeatherAttempt = 0;
+volatile bool weatherFetchActive = false;
 static TaskHandle_t weatherTaskHandle = NULL;
 
 #define WEATHER_LOG_MAX 7
@@ -341,6 +342,7 @@ void saveConfig() {
 // ── Weather ───────────────────────────────────────────────────────────────────
 
 void fetchWeather(bool manual = false) {
+  weatherFetchActive = true;
   time_t now; time(&now);
   lastWeatherAttempt = now;
   String url = String("https://api.open-meteo.com/v1/forecast?latitude=") +
@@ -382,11 +384,12 @@ void fetchWeather(bool manual = false) {
   }
   if (code != 200) {
     Serial.printf("Weather fetch failed after all attempts: code=%d\n", code);
-    pushWeatherLog(now,0,0,0,0,0,false,(int16_t)code,manual); return;
+    pushWeatherLog(now,0,0,0,0,0,false,(int16_t)code,manual);
+    weatherFetchActive = false; return;
   }
   JsonDocument doc;
   DeserializationError err = deserializeJson(doc, body);
-  if (err) { Serial.printf("Weather JSON error: %s\n", err.c_str()); pushWeatherLog(now,0,0,0,0,0,false,-2,manual); return; }
+  if (err) { Serial.printf("Weather JSON error: %s\n", err.c_str()); pushWeatherLog(now,0,0,0,0,0,false,-2,manual); weatherFetchActive = false; return; }
   float maxC  = doc["daily"]["temperature_2m_max"][0] | 100.0f;
   float precip= doc["daily"]["precipitation_sum"][0]  | 0.0f;
   float cloud = doc["daily"]["cloud_cover_mean"][0]   | 0.0f;
@@ -399,6 +402,7 @@ void fetchWeather(bool manual = false) {
   { Preferences p; p.begin("irr", false); p.putULong("wFetch", (unsigned long)now); p.end(); }
   pushWeatherLog(now, maxF, precip, cloud, windK, weatherScale, true, 0, manual);
   Serial.printf("Weather: %.1f°F %.1fmm %.0f%% cloud %.1fkph wind → scale %d%%\n", maxF, precip, cloud, windK, weatherScale);
+  weatherFetchActive = false;
 }
 
 // ── Scheduler ─────────────────────────────────────────────────────────────────
@@ -585,7 +589,7 @@ body.color .weather-badge.active{border-color:rgba(56,189,248,.4);background:rgb
 body.color .weather-badge.hot{border-color:rgba(251,146,60,.4);background:rgba(251,146,60,.08)}
 .log-ov{position:fixed;inset:0;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;z-index:200}
 .log-modal{background:#0f172a;border-radius:1rem;width:100%;max-width:500px;max-height:90vh;display:flex;flex-direction:column}
-.log-head{display:flex;align-items:center;justify-content:space-between;padding:.85rem 1rem;border-bottom:1px solid #475569;flex-shrink:0}
+.log-head{display:flex;align-items:center;justify-content:space-between;padding:.85rem 1rem;border-bottom:1px solid #475569;flex-shrink:0;cursor:grab}
 .log-head span{font-size:.88rem;font-weight:600;color:#e2e8f0}
 .log-close{background:none;border:none;color:#94a3b8;cursor:pointer;font-size:1.1rem;line-height:1;padding:.2rem}
 .log-close:hover{color:#94a3b8}
@@ -640,7 +644,7 @@ body.color .prn-btn:disabled{color:#525252;border-color:#333}
 .ztog-label{font-size:.79rem;font-weight:600;color:#e2e8f0;flex:1}
 .modal-ov{position:fixed;inset:0;background:rgba(0,0,0,.65);display:flex;align-items:center;justify-content:center;z-index:100}
 .modal{background:#1e293b;border-radius:.875rem;padding:1.25rem;border:1px solid #475569;width:260px;max-width:90vw}
-.modal-title{font-size:.88rem;font-weight:600;color:#7dd3fc;margin-bottom:.9rem}
+.modal-title{font-size:.88rem;font-weight:600;color:#7dd3fc;margin-bottom:.9rem;cursor:grab}
 .modal label{font-size:.62rem;color:#94a3b8;letter-spacing:.08em;text-transform:uppercase;display:block;margin-bottom:.35rem}
 .modal input{width:100%;background:#0f172a;border:1px solid #475569;border-radius:.3rem;color:#e2e8f0;padding:.4rem .5rem;font-size:1.1rem;text-align:center;margin-bottom:.9rem}
 .modal input:focus{outline:none;border-color:#7dd3fc}
@@ -661,7 +665,7 @@ body.light .dur-preset-a{color:#7c3aed;border-color:rgba(124,58,237,.5);backgrou
 @media(max-width:400px){.zdurs{grid-template-columns:1fr 1fr}}
 .tg-ov{position:fixed;inset:0;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;z-index:200}
 .tg-modal{background:#0f172a;border-radius:1rem;width:100%;max-width:500px;padding:1rem;box-sizing:border-box}
-.tg-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:.75rem}
+.tg-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:.75rem;cursor:grab}
 .tg-title{font-size:.82rem;font-weight:700;color:#7dd3fc;letter-spacing:.06em;text-transform:uppercase}
 .tg-close{background:none;border:none;color:#94a3b8;font-size:1.3rem;cursor:pointer;line-height:1}
 .tg-note{font-size:.6rem;color:#94a3b8;text-align:center;margin-top:.4rem;letter-spacing:.03em}
@@ -1356,7 +1360,35 @@ function cycleTheme(){
   const cur=localStorage.getItem('theme')||'dark';
   setTheme({dark:'light',light:'color',color:'dark'}[cur]||'light');
 }
-(function(){const t=localStorage.getItem('theme')||'dark';setTheme(t);})();
+function makeDraggable(el,handle){
+  var ox=0,oy=0;
+  handle.addEventListener('mousedown',function(e){
+    if(e.button!==0)return;
+    e.preventDefault();
+    var sx=e.clientX-ox,sy=e.clientY-oy;
+    handle.style.cursor='grabbing';
+    function mv(e){ox=e.clientX-sx;oy=e.clientY-sy;el.style.transform='translate('+ox+'px,'+oy+'px)';}
+    function up(){handle.style.cursor='grab';document.removeEventListener('mousemove',mv);document.removeEventListener('mouseup',up);}
+    document.addEventListener('mousemove',mv);
+    document.addEventListener('mouseup',up);
+  });
+}
+(function(){
+  const t=localStorage.getItem('theme')||'dark';setTheme(t);
+  makeDraggable(document.querySelector('#log-ov .log-modal'),document.querySelector('#log-ov .log-head'));
+  makeDraggable(document.querySelector('#clog-ov .log-modal'),document.querySelector('#clog-ov .log-head'));
+  makeDraggable(document.querySelector('#wlog-ov .log-modal'),document.querySelector('#wlog-ov .log-head'));
+  makeDraggable(document.querySelector('#tg-ov .tg-modal'),document.querySelector('#tg-ov .tg-head'));
+  makeDraggable(document.querySelector('#rn-modal .modal'),document.querySelector('#rn-modal .modal-title'));
+  document.addEventListener('keydown',function(e){
+    if(e.key!=='Escape')return;
+    if(document.getElementById('log-ov').style.display!=='none')closeLog();
+    else if(document.getElementById('clog-ov').style.display!=='none')closeChangeLog();
+    else if(document.getElementById('wlog-ov').style.display!=='none')closeWeatherLog();
+    else if(document.getElementById('tg-ov').style.display!=='none')closeTempGraph();
+    else if(document.getElementById('rn-modal').style.display!=='none')rnCancel();
+  });
+})();
 
 async function fetchTemp(){
   try{
@@ -1816,7 +1848,7 @@ void loop() {
     { int mMin = programs[0].hour * 60 + programs[0].minute;
       int fMin = ((mMin - 120) + 1440) % 1440;
       bool inWindow = (ti.tm_hour == fMin/60 && ti.tm_min >= fMin%60);
-      bool cooldown = (now - lastWeatherAttempt > 900);
+      bool cooldown = !weatherFetchActive && (now - lastWeatherAttempt > 900);
       if (cooldown) {
         struct tm lastFetchTm{};
         if (lastWeatherFetch > 0) localtime_r(&lastWeatherFetch, &lastFetchTm);
