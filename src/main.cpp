@@ -50,7 +50,7 @@ uint8_t activeTrigger   = 0;
 static portMUX_TYPE stateMux = portMUX_INITIALIZER_UNLOCKED;
 
 #define HISTORY_MAX 200
-struct HistoryEntry { time_t start; uint16_t duration; uint8_t zone; uint8_t trigger; };
+struct HistoryEntry { time_t start; uint16_t duration; uint8_t zone; uint8_t trigger; uint16_t gallonsX10; };
 HistoryEntry history[HISTORY_MAX];
 int histHead = 0, histCount = 0;
 uint8_t historyDays = 7;
@@ -68,6 +68,18 @@ time_t  lastWeatherFetch = 0;
 time_t  lastWeatherAttempt = 0;
 volatile bool weatherFetchActive = false;
 static TaskHandle_t weatherTaskHandle = NULL;
+
+uint8_t  flowPin             = 16;
+uint32_t flowPulsesPerGallon = 0;       // 0 = not calibrated
+volatile uint32_t flowPulseCount = 0;
+uint32_t activeStartPulses   = 0;
+
+#define FLOW_BASELINE_RUNS 3            // runs needed to establish per-zone baseline
+uint16_t zoneFlowBaseline[NUM_ZONES]    = {};  // gal/min * 100; 0 = still learning
+uint8_t  zoneBaselineCount[NUM_ZONES]   = {};  // valid runs accumulated so far
+uint32_t zoneBaselineSum[NUM_ZONES]     = {};  // sum of rateX100 during learning
+uint8_t  zoneFlowAlarmBits              = 0;   // bitmask: bit i = zone i has low-flow alarm
+uint8_t  flowAlarmThreshPct             = 75;  // alarm when flow < this % of baseline
 
 #define WEATHER_LOG_MAX 7
 struct WeatherLogEntry { time_t t; float maxF, precip, cloud, wind; uint8_t scale; bool ok; int16_t errCode; bool manual; };
@@ -217,6 +229,62 @@ void updateLED() {
   led.show();
 }
 
+// ── Flow sensor ───────────────────────────────────────────────────────────────
+
+void saveConfig();  // forward declaration — defined after loadConfig
+
+// Evaluate a completed zone run against its flow baseline.
+// rateX100 = gal/min * 100.  Skips short/zero-flow runs during learning phase.
+void checkFlowRate(uint8_t zone, uint16_t gallonsX10, uint16_t durSecs) {
+  if (zone >= NUM_ZONES || flowPulsesPerGallon == 0) return;
+  if (durSecs < 30) return;                         // too short to be meaningful
+  uint32_t rateX100 = gallonsX10 > 0
+    ? (uint32_t)gallonsX10 * 600UL / durSecs : 0;  // gal/min * 100
+
+  if (zoneFlowBaseline[zone] == 0) {
+    // still in learning phase — only accumulate positive readings
+    if (rateX100 == 0) return;
+    zoneBaselineSum[zone] += rateX100;
+    zoneBaselineCount[zone]++;
+    if (zoneBaselineCount[zone] >= FLOW_BASELINE_RUNS) {
+      zoneFlowBaseline[zone] = (uint16_t)(zoneBaselineSum[zone] / FLOW_BASELINE_RUNS);
+      Serial.printf("Zone %d flow baseline: %.2f gal/min (%d runs)\n",
+        zone, zoneFlowBaseline[zone] / 100.0f, FLOW_BASELINE_RUNS);
+      saveConfig();
+    } else {
+      saveConfig();   // persist partial progress
+    }
+    return;
+  }
+
+  // baseline established — check against threshold
+  uint32_t threshold = (uint32_t)zoneFlowBaseline[zone] * flowAlarmThreshPct / 100;
+  bool wasAlarm = (zoneFlowAlarmBits >> zone) & 1;
+  if (rateX100 < threshold) {
+    if (!wasAlarm) {
+      zoneFlowAlarmBits |= (1 << zone);
+      saveConfig();
+      Serial.printf("Zone %d LOW FLOW: %.2f gal/min (baseline %.2f, threshold %d%%)\n",
+        zone, rateX100 / 100.0f, zoneFlowBaseline[zone] / 100.0f, flowAlarmThreshPct);
+    }
+  } else {
+    if (wasAlarm) {
+      zoneFlowAlarmBits &= ~(1 << zone);
+      saveConfig();
+      Serial.printf("Zone %d flow alarm cleared: %.2f gal/min\n", zone, rateX100 / 100.0f);
+    }
+  }
+}
+
+void IRAM_ATTR flowPulseISR() { flowPulseCount++; }
+
+void setupFlowSensor(uint8_t newPin) {
+  detachInterrupt(digitalPinToInterrupt(flowPin));
+  flowPin = newPin;
+  pinMode(flowPin, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(flowPin), flowPulseISR, FALLING);
+}
+
 // ── Relay ─────────────────────────────────────────────────────────────────────
 
 void setRelay(int idx, bool on) {
@@ -258,13 +326,18 @@ void stopActive(int requireZone = -1) {
     return;
   }
   time_t now; time(&now);
-  uint16_t dur   = (uint16_t)min((long)(now - activeStartTime), 65535L);
-  int8_t   zone  = activeZone;
-  uint8_t  trig  = activeTrigger;
-  time_t   start = activeStartTime;
+  uint16_t dur        = (uint16_t)min((long)(now - activeStartTime), 65535L);
+  int8_t   zone       = activeZone;
+  uint8_t  trig       = activeTrigger;
+  time_t   start      = activeStartTime;
+  uint32_t startPulses= activeStartPulses;
   activeZone = -1; activeEndTime = 0; activeStartTime = 0;
   portEXIT_CRITICAL(&stateMux);
-  addHistory({start, dur, (uint8_t)zone, trig});
+  uint32_t pulsesUsed = flowPulseCount - startPulses;
+  uint16_t gallonsX10 = flowPulsesPerGallon > 0
+    ? (uint16_t)min((uint32_t)65535U, pulsesUsed * 10U / flowPulsesPerGallon) : 0;
+  addHistory({start, dur, (uint8_t)zone, trig, gallonsX10});
+  checkFlowRate((uint8_t)zone, gallonsX10, dur);
   setRelay(zone, false);
   Serial.printf("Zone %d (%s) done after %us\n", zone, relayNames[zone], dur);
 }
@@ -276,7 +349,6 @@ void allOffFn() {
 
 // ── Persistence ───────────────────────────────────────────────────────────────
 
-void saveConfig();
 void loadConfig() {
   prefs.begin("irr", true);
   for (int i = 0; i < NUM_ZONES; i++) {
@@ -301,7 +373,17 @@ void loadConfig() {
   historyDays     = prefs.getUChar("hdays", 7);
   coolDayPct      = prefs.getUChar("wPct",  50);
   hotDayPct       = prefs.getUChar("wHPct", 150);
-  lastWeatherFetch= (time_t)prefs.getULong("wFetch", 0);
+  lastWeatherFetch    = (time_t)prefs.getULong("wFetch",   0);
+  flowPin             = prefs.getUChar("flowPin", 16);
+  flowPulsesPerGallon = prefs.getULong("flowPPG",  0);
+  zoneFlowAlarmBits   = prefs.getUChar("zfAlarm",  0);
+  flowAlarmThreshPct  = prefs.getUChar("zfPct",   75);
+  for (int i = 0; i < NUM_ZONES; i++) {
+    char k[10];
+    snprintf(k, sizeof(k), "zfb%d",  i); zoneFlowBaseline[i]  = prefs.getUShort(k, 0);
+    snprintf(k, sizeof(k), "zfbc%d", i); zoneBaselineCount[i] = prefs.getUChar(k,  0);
+    snprintf(k, sizeof(k), "zfbs%d", i); zoneBaselineSum[i]   = prefs.getULong(k,  0);
+  }
   uint8_t cfgVer = prefs.getUChar("cfgVer", 0);
   prefs.end();
   if (cfgVer < 2) {
@@ -334,7 +416,17 @@ void saveConfig() {
   prefs.putUChar("hdays",  historyDays);
   prefs.putUChar("wPct",   coolDayPct);
   prefs.putUChar("wHPct",  hotDayPct);
-  prefs.putULong("wFetch", (unsigned long)lastWeatherFetch);
+  prefs.putULong("wFetch",   (unsigned long)lastWeatherFetch);
+  prefs.putUChar("flowPin",  flowPin);
+  prefs.putULong("flowPPG",  flowPulsesPerGallon);
+  prefs.putUChar("zfAlarm",  zoneFlowAlarmBits);
+  prefs.putUChar("zfPct",    flowAlarmThreshPct);
+  for (int i = 0; i < NUM_ZONES; i++) {
+    char k[10];
+    snprintf(k, sizeof(k), "zfb%d",  i); prefs.putUShort(k, zoneFlowBaseline[i]);
+    snprintf(k, sizeof(k), "zfbc%d", i); prefs.putUChar(k,  zoneBaselineCount[i]);
+    snprintf(k, sizeof(k), "zfbs%d", i); prefs.putULong(k,  zoneBaselineSum[i]);
+  }
   prefs.putUChar("cfgVer", 2);
   prefs.end();
 }
@@ -441,6 +533,7 @@ void runQueue() {
     QEntry e = dequeue();
     activeZone = e.zone; activeEndTime = now + e.secs;
     activeStartTime = now; activeTrigger = e.trigger;
+    activeStartPulses = flowPulseCount;
     portEXIT_CRITICAL(&stateMux);
     setRelay(e.zone, true);
     Serial.printf("Queue: Zone %d (%s) ON for %lus\n", e.zone, relayNames[e.zone], (unsigned long)e.secs);
@@ -731,6 +824,19 @@ body.color .zsched-c{color:#a78bfa;border-color:rgba(167,139,250,.4);background:
 body.color .zday{background:#262626;border-color:#404040;color:#737373}
 body.color .zday-m.on{background:#075985;color:#38bdf8;border-color:#0284c7}
 body.color .zday-a.on{background:#3b0764;color:#c4b5fd;border-color:#7c3aed}
+.flow-row{display:flex;align-items:center;justify-content:center;gap:.5rem;margin-top:.5rem;width:100%;max-width:500px}
+.flow-alarm{display:flex;align-items:flex-start;gap:.6rem;width:100%;max-width:500px;background:rgba(127,29,29,.55);border:1px solid #b91c1c;border-radius:.6rem;padding:.65rem .9rem;margin-bottom:.35rem}
+.flow-alarm-txt{flex:1;font-size:.8rem;color:#fca5a5;line-height:1.4}
+.flow-alarm-x{background:none;border:none;color:#f87171;cursor:pointer;font-size:1rem;padding:.05rem .3rem;line-height:1;flex-shrink:0;margin-top:-.1rem}
+body.light .flow-alarm{background:rgba(254,226,226,.9);border-color:#f87171}
+body.light .flow-alarm-txt{color:#991b1b}
+body.light .flow-alarm-x{color:#dc2626}
+.fcal-zone-sel{width:100%;background:#0f172a;border:1px solid #475569;border-radius:.3rem;color:#e2e8f0;padding:.4rem .5rem;font-size:.95rem;margin-bottom:.9rem;color-scheme:dark}
+.fcal-zone-sel:focus{outline:none;border-color:#7dd3fc}
+.fcal-status{font-size:.72rem;color:#94a3b8;text-align:center;min-height:1rem;margin-bottom:.4rem}
+body.light .fcal-zone-sel{background:#f8fafc;border-color:#94a3b8;color:#1e293b;color-scheme:light}
+body.light .flow-row .weather-badge{color:#0369a1;border-color:#cbd5e1}
+body.color .fcal-zone-sel{background:#171717;border-color:#606060;color:#e5e5e5;color-scheme:dark}
 </style>
 </head>
 <body>
@@ -741,6 +847,11 @@ body.color .zday-a.on{background:#3b0764;color:#c4b5fd;border-color:#7c3aed}
   </div>
 </div>
 <div id="clock">--:--</div>
+<div class="flow-alarm" id="flow-alarm-banner" style="display:none">
+  <span style="font-size:1.1rem;flex-shrink:0">&#9888;&#65039;</span>
+  <span class="flow-alarm-txt" id="flow-alarm-txt"></span>
+  <button class="flow-alarm-x" onclick="dismissFlowAlarm()" title="Dismiss for this session">&#10005;</button>
+</div>
 <div class="sec">Zones</div>
 <div class="zone-grid" id="zone-grid"></div>
 <div class="footer"><button class="alloff" onclick="allOff()">All Off</button></div>
@@ -749,6 +860,7 @@ body.color .zday-a.on{background:#3b0764;color:#c4b5fd;border-color:#7c3aed}
 <div class="log-row">
   <button class="log-trigger" onclick="openLog()">&#128203; Run Log</button>
   <button class="log-trigger" onclick="openChangeLog()">&#9998; Change Log</button>
+  <button class="log-trigger" id="dl-btn" onclick="downloadLogs()">&#128229; Logs</button>
 </div>
 <div class="weather-row">
   <span class="weather-badge" id="weather-badge">
@@ -762,7 +874,16 @@ body.color .zday-a.on{background:#3b0764;color:#c4b5fd;border-color:#7c3aed}
       <span>%</span>
     </div>
   </span>
-  <button class="log-trigger" id="dl-btn" onclick="downloadLogs()">&#128229; Logs</button>
+  <button class="log-trigger" onclick="openFlowCal()">&#128167; Flow Cal</button>
+</div>
+<div class="flow-row" id="flow-row" style="display:none">
+  <span class="weather-badge" id="flow-badge">
+    <span style="flex-shrink:0">&#128167;</span>
+    <div style="display:flex;flex-direction:column;gap:.15rem;font-size:.88rem">
+      <span>Today: <b id="fl-today">0.0</b> gal &nbsp; Week: <b id="fl-week">0.0</b> gal</span>
+      <span style="font-size:.72rem;color:#94a3b8">GPIO<span id="fl-pin">--</span> &bull; <span id="fl-ppg">--</span> pulses/gal</span>
+    </div>
+  </span>
 </div>
 <div class="info-row">
   <a class="info-side" href="https://github.com/jurassic73/irrigation_control" target="_blank"><svg height="14" viewBox="0 0 16 16" width="14" style="vertical-align:middle;margin-right:.3em" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>GitHub</a>
@@ -801,6 +922,34 @@ body.color .zday-a.on{background:#3b0764;color:#c4b5fd;border-color:#7c3aed}
     <div class="tg-note" id="tg-note">Chip die temp &bull; 10-min samples &bull; last 24h</div>
   </div>
 </div>
+<div class="modal-ov" id="fcal-ov" style="display:none" onclick="if(event.target===this)closeFlowCal()">
+  <div class="modal" style="width:300px;max-width:92vw">
+    <div class="modal-title" id="fcal-title">&#128167; Flow Calibration</div>
+    <label>Zone to run during calibration</label>
+    <select class="fcal-zone-sel" id="fcal-zone" onchange="updateBaselineInfo()"></select>
+    <label>Flow Sensor GPIO Pin</label>
+    <input type="number" id="fcal-pin" min="0" max="48" value="16" style="margin-bottom:.75rem">
+    <div class="modal-btns" style="margin-bottom:.5rem">
+      <button class="mbtn sbtn" id="fcal-start-btn" onclick="startFlowCal()">&#9654; Start Cal</button>
+      <button class="mbtn mbtn-cancel" id="fcal-stop-btn" onclick="stopFlowCal()" disabled>&#9632; Stop Cal</button>
+    </div>
+    <div class="fcal-status" id="fcal-status">Fill a 1-gallon jug, then Start Cal to begin counting.</div>
+    <label>Pulses per Gallon</label>
+    <input type="number" id="fcal-ppg-inp" min="1" max="999999" placeholder="Run calibration or enter manually" style="margin-bottom:.75rem">
+    <div style="border-top:1px solid #475569;margin:.2rem 0 .75rem"></div>
+    <label>Low-flow alarm threshold</label>
+    <div style="display:flex;align-items:center;gap:.5rem;margin-bottom:.75rem">
+      <input type="number" id="fcal-thresh" min="10" max="99" value="75" style="max-width:4.5rem;margin-bottom:0">
+      <span style="font-size:.75rem;color:#94a3b8">% of baseline triggers alarm</span>
+    </div>
+    <div id="fcal-baseline-info" style="font-size:.72rem;color:#94a3b8;margin-bottom:.5rem"></div>
+    <button class="sbtn" style="width:100%;margin-bottom:.75rem;background:#1e3a5f;color:#7dd3fc;border:1px solid #3b82f6" onclick="resetFlowBaseline()">Reset Baseline for Selected Zone</button>
+    <div class="modal-btns">
+      <button class="mbtn sbtn" onclick="saveFlowCal()">Save</button>
+      <button class="mbtn mbtn-cancel" onclick="closeFlowCal()">Cancel</button>
+    </div>
+  </div>
+</div>
 <div class="modal-ov" id="rn-modal" style="display:none">
   <div class="modal">
     <div class="modal-title" id="rn-title">Run Zone</div>
@@ -827,6 +976,9 @@ body.color .zday-a.on{background:#3b0764;color:#c4b5fd;border-color:#7c3aed}
 </div>
 <script>
 let programs=[],zones=[],activeZone=-1,queued=[],tzSec=0,editing=new Set(),expanded=new Set(),daysSel={};
+let flowConfig={pin:16,ppg:0,alarm:0,threshPct:75,zfBase:[],zfCnt:[]};
+let fcalRunning=false;
+let flowAlarmDismissed=false;
 const DAYS=['S','M','T','W','T','F','S'];
 
 function fmtUptime(s){
@@ -845,6 +997,10 @@ async function fetchConfig(){
     initClock(d.epoch);
     if(d.uptime!=null) document.getElementById('uptime').textContent='Uptime: '+fmtUptime(d.uptime);
     renderWeather(d.weatherScale??100, d.coolDayPct??50, d.hotDayPct??150, d.lastWeatherFetch??0);
+    flowConfig={pin:d.flowPin??16, ppg:d.flowPPG??0, alarm:d.flowAlarm??0,
+                threshPct:d.flowThreshPct??75, zfBase:d.zfBase||[], zfCnt:d.zfCnt||[]};
+    updateFlowRow(d.flowGalToday??0, d.flowGalWeek??0);
+    updateAlarmBanner();
     render();
   }catch(e){}
 }
@@ -974,6 +1130,7 @@ function renderZones(){
           '<div><label>Name</label><input type="text" id="zn'+i+'" value="'+(epOpen?(document.getElementById('zn'+i)?.value??escA(z.name)):escA(z.name))+'" maxlength="24"></div>'+
           '<div><label>GPIO Pin</label><input type="number" id="zp'+i+'" value="'+(epOpen?(document.getElementById('zp'+i)?.value??z.pin):z.pin)+'" min="0" max="48"></div>'+
           '<button class="sbtn" onclick="saveZone('+i+')">Save</button>'+
+          (flowConfig.ppg>0 ? fmtZoneFlowStatus(i) : '')+
         '</div>'+
       '</div>';
     el.appendChild(c);
@@ -1165,8 +1322,10 @@ async function openLog(){
       const badge=trig==='Manual'
         ?'<span style="font-size:.65rem;background:#1e40af;color:#93c5fd;border-radius:.25rem;padding:.05rem .3rem;margin-left:.3rem">Manual</span>'
         :'<span style="font-size:.65rem;background:#1e293b;color:#94a3b8;border-radius:.25rem;padding:.05rem .3rem;margin-left:.3rem">'+esc(trig)+'</span>';
+      const galSpan=(e.gallonsX10>0)?'<span style="font-size:.68rem;color:#38bdf8;min-width:34px;text-align:right">'+(e.gallonsX10/10).toFixed(1)+'g</span>':'';
       html+='<div class="log-entry">'+
         '<span class="log-zone">'+esc(e.name)+badge+'</span>'+
+        galSpan+
         '<span class="log-dur">'+fmtDur(e.durationSecs)+'</span>'+
         '<span class="log-time">'+fmtTime(e.start)+'</span>'+
       '</div>';
@@ -1279,9 +1438,10 @@ async function downloadLogs(){
       else{const r=e.err===-1?'connect failed':e.err===-2?'JSON error':'HTTP '+e.err;
         csv+=csvDate(e.t,false)+','+csvTime(e.t,false)+','+typ+',,,,,,'+q('Failed: '+r)+'\r\n';}
     });
-    csv+='\r\n=== RUN HISTORY ===\r\nDate,Time,Zone,Duration,Trigger\r\n';
+    csv+='\r\n=== RUN HISTORY ===\r\nDate,Time,Zone,Duration,Water (gal),Trigger\r\n';
     if(hist.count)[...hist.history].reverse().forEach(e=>{
-      csv+=csvDate(e.start,false)+','+csvTime(e.start,false)+','+q(e.name)+','+fs(e.durationSecs)+','+q(e.trigger)+'\r\n';
+      const gal=e.gallonsX10>0?(e.gallonsX10/10).toFixed(1):'';
+      csv+=csvDate(e.start,false)+','+csvTime(e.start,false)+','+q(e.name)+','+fs(e.durationSecs)+','+gal+','+q(e.trigger)+'\r\n';
     });
     csv+='\r\n=== CHANGE LOG ===\r\nDate,Time,Type,What,Detail\r\n';
     const prNC=['Morning','Afternoon'];
@@ -1350,6 +1510,151 @@ async function manualFetch(){
 }
 function closeWeatherLog(){document.getElementById('wlog-ov').style.display='none';}
 
+function fmtZoneFlowStatus(i){
+  const base=flowConfig.zfBase?.[i]||0;
+  const cnt=flowConfig.zfCnt?.[i]||0;
+  const alarm=(flowConfig.alarm>>i)&1;
+  const totalRuns=3;
+  let statusHtml;
+  if(base===0){
+    statusHtml='<span style="color:#94a3b8">Learning baseline: '+cnt+'/'+totalRuns+' runs</span>';
+  } else {
+    const rate=(base/100).toFixed(2);
+    statusHtml=alarm
+      ?'<span style="color:#f87171">&#9888; Low flow alarm &mdash; '+rate+' gal/min baseline</span>'
+      :'<span style="color:#22c55e">&#10003; Baseline: '+rate+' gal/min</span>';
+  }
+  return '<div style="display:flex;align-items:center;justify-content:space-between;margin-top:.4rem;gap:.5rem">'+
+    '<span style="font-size:.68rem;letter-spacing:.04em">'+statusHtml+'</span>'+
+    '<button class="mbtn mbtn-cancel" style="font-size:.68rem;padding:.2rem .55rem;flex-shrink:0" onclick="resetZoneBaseline('+i+')">Reset Baseline</button>'+
+  '</div>';
+}
+async function resetZoneBaseline(zi){
+  if(!confirm('Reset flow baseline for '+esc(zones[zi]?.name||('Zone '+(zi+1)))+'?\nIt will re-learn from the next 3 runs.'))return;
+  await fetch('/resetflowbaseline?zone='+zi);
+  await fetchConfig();
+}
+function updateFlowRow(galToday, galWeek){
+  const row=document.getElementById('flow-row');
+  if(!row)return;
+  if(flowConfig.ppg>0){
+    row.style.display='flex';
+    document.getElementById('fl-today').textContent=galToday.toFixed(1);
+    document.getElementById('fl-week').textContent=galWeek.toFixed(1);
+    document.getElementById('fl-pin').textContent=flowConfig.pin;
+    document.getElementById('fl-ppg').textContent=flowConfig.ppg.toLocaleString();
+  } else {
+    row.style.display='none';
+  }
+}
+function openFlowCal(){
+  const sel=document.getElementById('fcal-zone');
+  sel.innerHTML='';
+  zones.forEach((z,i)=>{
+    const o=document.createElement('option');
+    o.value=i; o.textContent=z.name||('Zone '+(i+1));
+    if(i===zones.length-1)o.selected=true;
+    sel.appendChild(o);
+  });
+  document.getElementById('fcal-pin').value=flowConfig.pin;
+  document.getElementById('fcal-ppg-inp').value=flowConfig.ppg||'';
+  document.getElementById('fcal-thresh').value=flowConfig.threshPct??75;
+  document.getElementById('fcal-status').textContent='Fill a 1-gallon jug, then Start Cal to begin counting.';
+  document.getElementById('fcal-title').textContent='\u{1F4A7} Flow Calibration';
+  document.getElementById('fcal-start-btn').disabled=false;
+  document.getElementById('fcal-stop-btn').disabled=true;
+  updateBaselineInfo();
+  document.getElementById('fcal-ov').style.display='flex';
+}
+function updateBaselineInfo(){
+  const zi=parseInt(document.getElementById('fcal-zone')?.value??0);
+  const info=document.getElementById('fcal-baseline-info');
+  if(!info)return;
+  const base=flowConfig.zfBase?.[zi]||0;
+  const cnt=flowConfig.zfCnt?.[zi]||0;
+  const alarm=(flowConfig.alarm>>zi)&1;
+  if(base===0){
+    info.textContent='Baseline: learning ('+cnt+'/'+((typeof FLOW_BASELINE_RUNS!=='undefined')?FLOW_BASELINE_RUNS:3)+' runs)';
+  } else {
+    const rate=(base/100).toFixed(2);
+    info.innerHTML='Baseline: '+rate+' gal/min'+(alarm?' <span style="color:#f87171">⚠ ALARM</span>':'<span style="color:#22c55e"> ✓ OK</span>');
+  }
+}
+function closeFlowCal(){
+  if(fcalRunning) stopFlowCal(true);
+  document.getElementById('fcal-ov').style.display='none';
+}
+async function startFlowCal(){
+  const zoneIdx=parseInt(document.getElementById('fcal-zone').value);
+  await fetch('/flowcal/start');
+  // turn on selected zone with a long timeout (30 min max for cal)
+  await fetch('/relay?id='+zoneIdx+'&state=1&secs=1800');
+  queued=[...queued,zoneIdx];
+  render();
+  fcalRunning=true;
+  document.getElementById('fcal-start-btn').disabled=true;
+  document.getElementById('fcal-stop-btn').disabled=false;
+  document.getElementById('fcal-ppg-inp').value='';
+  document.getElementById('fcal-status').textContent='Zone running — fill your 1-gal jug, then click Stop Cal.';
+  document.getElementById('fcal-title').textContent='\u{1F4A7} Calibrating…';
+}
+async function stopFlowCal(silent){
+  fcalRunning=false;
+  const zoneIdx=parseInt(document.getElementById('fcal-zone').value);
+  // stop the zone
+  await fetch('/relay?id='+zoneIdx+'&state=0');
+  queued=queued.filter(z=>z!==zoneIdx);
+  if(activeZone===zoneIdx)activeZone=-1;
+  render();
+  const d=await fetch('/flowcal/stop').then(r=>r.json()).catch(()=>({pulses:0}));
+  document.getElementById('fcal-start-btn').disabled=false;
+  document.getElementById('fcal-stop-btn').disabled=true;
+  if(!silent){
+    document.getElementById('fcal-ppg-inp').value=d.pulses||'';
+    document.getElementById('fcal-status').textContent='Counted '+d.pulses+' pulses. Adjust if needed, then Save.';
+    document.getElementById('fcal-title').textContent='\u{1F4A7} Flow Calibration';
+  }
+  schedFetch();
+}
+async function saveFlowCal(){
+  const pin=parseInt(document.getElementById('fcal-pin').value);
+  const ppg=parseInt(document.getElementById('fcal-ppg-inp').value);
+  const thresh=parseInt(document.getElementById('fcal-thresh').value);
+  if(isNaN(pin)||pin<0||pin>48){document.getElementById('fcal-status').textContent='Invalid GPIO pin.';return;}
+  if(isNaN(ppg)||ppg<1){document.getElementById('fcal-status').textContent='Enter a valid pulses/gal value.';return;}
+  await Promise.all([
+    fetch('/setflow?pin='+pin+'&ppg='+ppg),
+    (!isNaN(thresh)&&thresh>=10&&thresh<=99)?fetch('/setflowthresh?pct='+thresh):Promise.resolve()
+  ]);
+  closeFlowCal();
+  await fetchConfig();
+}
+async function resetFlowBaseline(){
+  const zi=parseInt(document.getElementById('fcal-zone').value);
+  if(!confirm('Reset flow baseline for '+esc(zones[zi]?.name||('Zone '+(zi+1)))+'? It will re-learn from the next '+3+' runs.'))return;
+  await fetch('/resetflowbaseline?zone='+zi);
+  await fetchConfig();
+  updateBaselineInfo();
+  document.getElementById('fcal-status').textContent='Baseline reset. Will re-learn from next 3 runs.';
+}
+function updateAlarmBanner(){
+  const bits=flowConfig.alarm||0;
+  if(bits===0||flowAlarmDismissed){
+    document.getElementById('flow-alarm-banner').style.display='none';
+    return;
+  }
+  const names=[];
+  zones.forEach((z,i)=>{ if((bits>>i)&1) names.push(z.name||('Zone '+(i+1))); });
+  document.getElementById('flow-alarm-txt').innerHTML=
+    '<b>Low flow detected: '+names.map(n=>'<span style="color:#fcd34d">'+esc(n)+'</span>').join(', ')+'</b>'+
+    '<br>Possible upstream pressure issue (regulator?) or clogged emitters. Check run logs.';
+  document.getElementById('flow-alarm-banner').style.display='flex';
+}
+function dismissFlowAlarm(){
+  flowAlarmDismissed=true;
+  document.getElementById('flow-alarm-banner').style.display='none';
+}
+
 function setTheme(t){
   document.body.classList.remove('light','color');
   if(t==='light')document.body.classList.add('light');
@@ -1379,6 +1684,7 @@ function makeDraggable(el,handle){
   makeDraggable(document.querySelector('#clog-ov .log-modal'),document.querySelector('#clog-ov .log-head'));
   makeDraggable(document.querySelector('#wlog-ov .log-modal'),document.querySelector('#wlog-ov .log-head'));
   makeDraggable(document.querySelector('#tg-ov .tg-modal'),document.querySelector('#tg-ov .tg-head'));
+  makeDraggable(document.querySelector('#fcal-ov .modal'),document.querySelector('#fcal-ov .modal-title'));
   makeDraggable(document.querySelector('#rn-modal .modal'),document.querySelector('#rn-modal .modal-title'));
   document.addEventListener('keydown',function(e){
     if(e.key!=='Escape')return;
@@ -1386,6 +1692,7 @@ function makeDraggable(el,handle){
     else if(document.getElementById('clog-ov').style.display!=='none')closeChangeLog();
     else if(document.getElementById('wlog-ov').style.display!=='none')closeWeatherLog();
     else if(document.getElementById('tg-ov').style.display!=='none')closeTempGraph();
+    else if(document.getElementById('fcal-ov').style.display!=='none')closeFlowCal();
     else if(document.getElementById('rn-modal').style.display!=='none')rnCancel();
   });
 })();
@@ -1537,7 +1844,29 @@ static String buildConfigJson() {
     }
     j += "]}";
   }
-  j += "],\"weatherScale\":" + String(weatherScale) + ",\"coolDayPct\":" + String(coolDayPct) + ",\"hotDayPct\":" + String(hotDayPct) + ",\"lastWeatherFetch\":" + String((long)lastWeatherFetch) + "}";
+  j += "],\"weatherScale\":" + String(weatherScale) + ",\"coolDayPct\":" + String(coolDayPct) + ",\"hotDayPct\":" + String(hotDayPct) + ",\"lastWeatherFetch\":" + String((long)lastWeatherFetch);
+  // flow stats
+  float galToday = 0, galWeek = 0;
+  if (flowPulsesPerGallon > 0) {
+    struct tm ti2{}; time_t n2; time(&n2); localtime_r(&n2, &ti2);
+    time_t todayStart = n2 - ti2.tm_hour*3600 - ti2.tm_min*60 - ti2.tm_sec;
+    time_t weekStart  = todayStart - (time_t)ti2.tm_wday * 86400;
+    for (int i = 0; i < histCount; i++) {
+      HistoryEntry& e = history[(histHead + i) % HISTORY_MAX];
+      if (e.start >= weekStart)  galWeek  += e.gallonsX10 / 10.0f;
+      if (e.start >= todayStart) galToday += e.gallonsX10 / 10.0f;
+    }
+  }
+  char fbuf[160];
+  snprintf(fbuf, sizeof(fbuf),
+    ",\"flowPin\":%u,\"flowPPG\":%lu,\"flowAlarm\":%u,\"flowThreshPct\":%u,\"flowGalToday\":%.1f,\"flowGalWeek\":%.1f",
+    flowPin, (unsigned long)flowPulsesPerGallon, zoneFlowAlarmBits, flowAlarmThreshPct, galToday, galWeek);
+  j += fbuf;
+  j += ",\"zfBase\":[";
+  for (int i = 0; i < NUM_ZONES; i++) { if (i) j += ","; j += String(zoneFlowBaseline[i]); }
+  j += "],\"zfCnt\":[";
+  for (int i = 0; i < NUM_ZONES; i++) { if (i) j += ","; j += String(zoneBaselineCount[i]); }
+  j += "]}";
   return j;
 }
 
@@ -1560,6 +1889,7 @@ void setup() {
     pinMode(relayPins[i], OUTPUT);
     setRelay(i, false);
   }
+  setupFlowSensor(flowPin);
 
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   Serial.print("Connecting to WiFi");
@@ -1740,7 +2070,8 @@ void setup() {
            ",\"name\":\"" + jsonEsc(relayNames[e.zone]) + "\"" +
            ",\"trigger\":\"" + String(trig) + "\"" +
            ",\"start\":" + String((long)e.start) +
-           ",\"durationSecs\":" + String(e.duration) + "}";
+           ",\"durationSecs\":" + String(e.duration) +
+           ",\"gallonsX10\":" + String(e.gallonsX10) + "}";
     }
     j += "]}";
     req->send(200, "application/json", j);
@@ -1810,6 +2141,52 @@ void setup() {
     }
     j += "]";
     req->send(200, "application/json", j);
+  });
+
+  server.on("/flowcal/start", HTTP_GET, [](AsyncWebServerRequest* req){
+    flowPulseCount = 0;
+    req->send(200, "text/plain", "ok");
+  });
+
+  server.on("/flowcal/stop", HTTP_GET, [](AsyncWebServerRequest* req){
+    char buf[40];
+    snprintf(buf, sizeof(buf), "{\"pulses\":%lu}", (unsigned long)flowPulseCount);
+    req->send(200, "application/json", buf);
+  });
+
+  server.on("/setflow", HTTP_GET, [](AsyncWebServerRequest* req){
+    bool changed = false;
+    if (req->hasParam("pin")) {
+      uint8_t p = (uint8_t)constrain(req->getParam("pin")->value().toInt(), 0, 48);
+      if (p != flowPin) { setupFlowSensor(p); changed = true; }
+    }
+    if (req->hasParam("ppg")) {
+      flowPulsesPerGallon = (uint32_t)constrain((long)req->getParam("ppg")->value().toInt(), 1L, 999999L);
+      changed = true;
+    }
+    if (changed) saveConfig();
+    req->send(200, "text/plain", "ok");
+  });
+
+  server.on("/setflowthresh", HTTP_GET, [](AsyncWebServerRequest* req){
+    if (req->hasParam("pct")) {
+      flowAlarmThreshPct = (uint8_t)constrain(req->getParam("pct")->value().toInt(), 10, 99);
+      saveConfig();
+    }
+    req->send(200, "text/plain", "ok");
+  });
+
+  server.on("/resetflowbaseline", HTTP_GET, [](AsyncWebServerRequest* req){
+    if (!req->hasParam("zone")) { req->send(400, "text/plain", "missing zone"); return; }
+    int z = req->getParam("zone")->value().toInt();
+    if (z < 0 || z >= NUM_ZONES) { req->send(400, "text/plain", "bad zone"); return; }
+    zoneFlowBaseline[z] = 0;
+    zoneBaselineCount[z] = 0;
+    zoneBaselineSum[z]   = 0;
+    zoneFlowAlarmBits &= ~(1 << z);   // clear alarm for this zone too
+    saveConfig();
+    Serial.printf("Zone %d flow baseline reset\n", z);
+    req->send(200, "text/plain", "ok");
   });
 
   DefaultHeaders::Instance().addHeader("Access-Control-Allow-Origin", "*");

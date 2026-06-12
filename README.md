@@ -8,12 +8,13 @@ ESP32-S3 based irrigation controller with a mobile-friendly web UI. Controls up 
 
 ## Hardware
 
-| Component     | Detail                                                 |
-| ------------- | ------------------------------------------------------ |
-| MCU           | ESP32-S3-DevKitC-1-N8                                  |
-| Status LED    | WS2812 on GPIO 48 (onboard)                            |
-| Relay outputs | GPIO 4, 5, 6, 7, 15 (active-low)                       |
-| Relay board   | 5-channel optocoupler relay, 12 V coils, 5 V logic VCC |
+| Component     | Detail                                                       |
+| ------------- | ------------------------------------------------------------ |
+| MCU           | ESP32-S3-DevKitC-1-N8                                        |
+| Status LED    | WS2812 on GPIO 48 (onboard)                                  |
+| Relay outputs | GPIO 4, 5, 6, 7, 15 (active-low)                             |
+| Relay board   | 5-channel optocoupler relay, 12 V coils, 5 V logic VCC       |
+| Flow sensor   | DIGITEN FL-S402B on GPIO 16 — Red→3.3 V, Black→GND, Yellow→GPIO 16 |
 
 ### LED status colors
 
@@ -37,12 +38,13 @@ Prices are approximate and subject to change.
 
 ### Electronics
 
-| Image                                                                       | Part               | Description                            | ~Price | Link                                                                             |
-| --------------------------------------------------------------------------- | ------------------ | -------------------------------------- | ------ | -------------------------------------------------------------------------------- |
-| <img src="pics/bom/esp32.jpg" alt="ESP32-S3 dev board" width="80">      | ESP32-S3 dev board | ESP32-S3-WROOM-1, 2-pack               | ~$16   | [Amazon B0FF3XC4RZ](https://www.amazon.com/dp/B0FF3XC4RZ)                           |
-| <img src="pics/bom/psu_12v.jpg" alt="12V power supply" width="80">      | 12 V power supply  | Powers relay coils and solenoid valves | ~$13   | [Amazon B00MEKJ4E2](https://www.amazon.com/dp/B00MEKJ4E2)                           |
-| <img src="pics/bom/relay_board.jpg" alt="5-ch relay board" width="80">  | 5-ch relay board   | 5V optocoupler relay, 12 V coils       | ~$5    | [AliExpress](https://www.aliexpress.us/w/wholesale-5v-relay-board-optocoupler.html) |
-| <img src="pics/bom/buck_converter.jpg" alt="Buck converter" width="80"> | Buck converter     | 12 V → 5 V step-down (powers ESP32)   | ~$3    | [AliExpress](https://www.aliexpress.us/w/wholesale-step-down-buck.html)             |
+| Image                                                                                 | Part               | Description                                                                  | ~Price | Link                                                                             |
+| ------------------------------------------------------------------------------------- | ------------------ | ---------------------------------------------------------------------------- | ------ | -------------------------------------------------------------------------------- |
+| <img src="pics/bom/esp32.jpg" alt="ESP32-S3 dev board" width="80">               | ESP32-S3 dev board | ESP32-S3-WROOM-1, 2-pack                                                     | ~$16   | [Amazon B0FF3XC4RZ](https://www.amazon.com/dp/B0FF3XC4RZ)                           |
+| <img src="pics/bom/psu_12v.jpg" alt="12V power supply" width="80">               | 12 V power supply  | Powers relay coils and solenoid valves                                       | ~$13   | [Amazon B00MEKJ4E2](https://www.amazon.com/dp/B00MEKJ4E2)                           |
+| <img src="pics/bom/relay_board.jpg" alt="5-ch relay board" width="80">           | 5-ch relay board   | 5V optocoupler relay, 12 V coils                                             | ~$5    | [AliExpress](https://www.aliexpress.us/w/wholesale-5v-relay-board-optocoupler.html) |
+| <img src="pics/bom/buck_converter.jpg" alt="Buck converter" width="80">          | Buck converter     | 12 V → 5 V step-down (powers ESP32)                                         | ~$3    | [AliExpress](https://www.aliexpress.us/w/wholesale-step-down-buck.html)             |
+| <img src="pics/bom/flow_sensor.jpg" alt="Hall effect flow sensor" width="80">    | Flow sensor        | DIGITEN FL-S402B, 1/4″ quick-connect, 0.3–10 L/min Hall effect — GPIO 16   | ~$9.50 | [Amazon search](https://www.amazon.com/s?k=1%2F4+Quick+Connect+0.3-10L%2Fmin+Water+Hall+Effect+Flow+Sensor+Meter) |
 
 ### Enclosure & Wiring
 
@@ -183,10 +185,54 @@ Two watering programs — Morning and Afternoon — each have an independent tim
 
 Each zone independently opts in or out of a program on a per-day basis using the day toggles on the zone card. A zone only waters when **both** the program's day mask **and** the zone's own day mask include that day of the week. This lets you run some zones every day while others water only on certain days, all within the same program schedule.
 
+### Flow Monitoring
+
+The flow sensor measures actual water delivered per zone run, auditing for upstream pressure problems (failing pressure regulator, supply starvation) and per-zone issues (clogged drip emitters, broken lines).
+
+#### Wiring
+
+Install the sensor inline on the main supply line — upstream of the solenoid valves so all zones flow through it.
+
+| Wire   | Connect to      |
+| ------ | --------------- |
+| Red    | 3.3 V           |
+| Black  | GND             |
+| Yellow | GPIO 16 (signal)|
+
+**Sensor spec (DIGITEN FL-S402B):** F = 23 × Q(L/min) — approximately 1,380 pulses/liter or **~5,220 pulses/gallon** theoretical. Always run the in-app calibration for your specific installation; actual values vary with pressure and fittings.
+
+#### Calibration
+
+1. Wire the sensor and flash firmware with flow sensor support enabled.
+2. Open the web UI and tap **Flow Cal** (to the right of the weather badge).
+3. Select the zone to run during calibration (defaults to Zone 5). Choose a zone that flows through the sensor.
+4. Verify **Flow Sensor GPIO Pin** is set to **16**.
+5. Have a clean 1-gallon measuring jug ready at the zone outlet.
+6. Tap **▶ Start Cal** — the selected zone turns on and pulse counting begins.
+7. Allow water to flow until the jug reaches exactly **1 gallon**, then tap **■ Stop Cal**.
+8. The zone stops and the counted pulses auto-populate the **Pulses per Gallon** field. Review and adjust if needed.
+9. Set your **Low-flow alarm threshold** (default 75% — alarm triggers when a run delivers less than 75% of the baseline flow rate).
+10. Tap **Save**.
+
+#### Baseline learning and low-flow alarms
+
+After calibration, the firmware auto-learns a per-zone flow baseline from the first 3 valid runs (runs ≥ 30 seconds with measured flow). Progress is shown in the Flow Cal modal next to each zone name.
+
+Once a baseline is established for a zone:
+
+- If a run's flow rate drops **below the alarm threshold** (default 75% of baseline), a persistent red banner appears at the top of the page on the next visit: **"Low flow detected: Zone X — possible upstream pressure issue or clogged emitters. Check run logs."**
+- The banner is dismissible for the current session, but reappears on the next page load until the alarm clears.
+- When subsequent runs return to within spec, the alarm **clears automatically**.
+- To reset a zone's baseline (e.g., after intentionally changing emitters), open **Flow Cal**, select the zone, and tap **Reset Baseline for Selected Zone**.
+
+The **Flow Adjustment row** below the weather badge shows today's and this week's total gallons delivered across all zones, along with the active GPIO pin and pulses/gallon setting. It is hidden until the sensor is calibrated.
+
+The **Run Log** shows a blue gallon figure (e.g., `2.4g`) next to each run's duration once flow data is available. The CSV export includes a **Water (gal)** column.
+
 ### Additional features
 
 - **All Off** — stops the active zone and clears the entire queue.
-- **Run Log** — opens a modal showing watering history grouped by day and program, newest first.
+- **Run Log** — opens a modal showing watering history grouped by day and program, newest first. Includes per-run gallon measurements once the flow sensor is calibrated.
 - **Chip temperature** — live ESP32 die temperature in the bottom bar. Tap to open a history graph with **1 Day** and **1 Week** views. Auto-refreshes every 60 seconds while open. Samples recorded every 10 minutes (up to 1,008 in RAM, resets on reboot).
 - **Uptime** — time since last boot, updated every 15 seconds.
 - **Theme** — 🎨 icon cycles dark → light → color. Preference saved in localStorage.
@@ -203,9 +249,14 @@ All endpoints are HTTP GET.
 | `/setzone`     | `id`, `name`, `pin`, `d0`…`dN`    | Update zone name, GPIO pin, or per-program durations (minutes)                                                                   |
 | `/setprogram`  | `id`, `en`, `h`, `m`, `days`       | Update a watering program                                                                                                        |
 | `/history`     | —                                           | JSON run history (newest first), includes `retainDays` and `count`                                                           |
-| `/sethistory`  | `days`                                     | Set history retention window (1–90 days)                                                                                        |
-| `/temp`        | —                                           | Current chip die temperature as `{"c": 52.3, "f": 126.1}`                                                                      |
-| `/temphistory` | `secs` (optional, default 604800)          | JSON array of temperature samples (10-min intervals) covering the requested window — up to 144 for 24 h, up to 1 008 for 7 days |
+| `/sethistory`        | `days`                                     | Set history retention window (1–90 days)                                                                                        |
+| `/temp`              | —                                           | Current chip die temperature as `{"c": 52.3, "f": 126.1}`                                                                      |
+| `/temphistory`       | `secs` (optional, default 604800)          | JSON array of temperature samples (10-min intervals) covering the requested window — up to 144 for 24 h, up to 1 008 for 7 days |
+| `/flowcal/start`     | —                                           | Reset pulse counter to 0 and begin counting — call before filling the calibration jug                                           |
+| `/flowcal/stop`      | —                                           | Stop counting; returns `{"pulses": N}` — the value to use as pulses/gallon                                                      |
+| `/setflow`           | `pin`, `ppg`                               | Set flow sensor GPIO pin and pulses-per-gallon; persisted to NVS                                                                |
+| `/setflowthresh`     | `pct`                                      | Set low-flow alarm threshold percentage (10–99); default 75                                                                     |
+| `/resetflowbaseline` | `zone`                                     | Clear the flow baseline and alarm for one zone; baseline re-learns from the next 3 runs                                         |
 
 ### `/history` response example
 
