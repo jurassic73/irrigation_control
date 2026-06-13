@@ -12,11 +12,16 @@
 #include "secrets.h"
 #include "location.h"
 
+#define FW_VERSION        "1.1.0"
+
 #define LED_PIN      48
 #define LED_COUNT     1
 #define NUM_ZONES     5
 #define NUM_PROGRAMS  2
 #define QUEUE_MAX    (NUM_ZONES * NUM_PROGRAMS)
+
+#define MAX_RELAY_SECS   28800UL   // 8 hours — hard cap on any single zone run
+#define WEATHER_SLEEP_MS (30UL * 60UL * 1000UL)  // 30-minute retry interval
 
 Adafruit_NeoPixel led(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
 
@@ -47,7 +52,9 @@ uint8_t activeTrigger   = 0;
 
 // ESPAsyncWebServer callbacks run on Core 0; loop() runs on Core 1.
 // stateMux guards all shared queue and active-zone state between the two tasks.
+// flowMux guards flowPulseCount between the FALLING-edge ISR and task context.
 static portMUX_TYPE stateMux = portMUX_INITIALIZER_UNLOCKED;
+static portMUX_TYPE flowMux  = portMUX_INITIALIZER_UNLOCKED;
 
 #define HISTORY_MAX 200
 struct HistoryEntry { time_t start; uint16_t duration; uint8_t zone; uint8_t trigger; uint16_t gallonsX10; };
@@ -74,6 +81,14 @@ uint32_t flowPulsesPerGallon = 0;       // 0 = not calibrated
 volatile uint32_t flowPulseCount = 0;
 uint32_t activeStartPulses   = 0;
 
+// Atomic snapshot of the ISR-updated pulse counter from task context.
+static inline uint32_t readFlowPulses() {
+  portENTER_CRITICAL(&flowMux);
+  uint32_t v = flowPulseCount;
+  portEXIT_CRITICAL(&flowMux);
+  return v;
+}
+
 #define FLOW_BASELINE_RUNS 3            // runs needed to establish per-zone baseline
 uint16_t zoneFlowBaseline[NUM_ZONES]    = {};  // gal/min * 100; 0 = still learning
 uint8_t  zoneBaselineCount[NUM_ZONES]   = {};  // valid runs accumulated so far
@@ -87,6 +102,7 @@ WeatherLogEntry wLog[WEATHER_LOG_MAX];
 int wLogCount = 0, wLogHead = 0;
 
 String clJson = "[]";
+bool timeValid = false;  // set true only after a successful NTP sync
 
 // ── Log persistence (LittleFS) ────────────────────────────────────────────────
 
@@ -169,8 +185,9 @@ void pushWeatherLog(time_t t, float maxF, float precip, float cloud, float wind,
   saveWeatherLog();
 }
 
-Preferences    prefs;
-AsyncWebServer server(80);
+Preferences       prefs;
+SemaphoreHandle_t prefsMux = nullptr;  // guards all Preferences access across cores
+AsyncWebServer    server(80);
 
 inline float toF(float c) { return c * 9.0f / 5.0f + 32.0f; }
 
@@ -250,9 +267,7 @@ void checkFlowRate(uint8_t zone, uint16_t gallonsX10, uint16_t durSecs) {
       zoneFlowBaseline[zone] = (uint16_t)(zoneBaselineSum[zone] / FLOW_BASELINE_RUNS);
       Serial.printf("Zone %d flow baseline: %.2f gal/min (%d runs)\n",
         zone, zoneFlowBaseline[zone] / 100.0f, FLOW_BASELINE_RUNS);
-      saveConfig();
-    } else {
-      saveConfig();   // persist partial progress
+      saveConfig();   // persist completed baseline
     }
     return;
   }
@@ -276,13 +291,19 @@ void checkFlowRate(uint8_t zone, uint16_t gallonsX10, uint16_t durSecs) {
   }
 }
 
-void IRAM_ATTR flowPulseISR() { flowPulseCount++; }
+void IRAM_ATTR flowPulseISR() {
+  portENTER_CRITICAL_ISR(&flowMux);
+  flowPulseCount++;
+  portEXIT_CRITICAL_ISR(&flowMux);
+}
 
 void setupFlowSensor(uint8_t newPin) {
-  detachInterrupt(digitalPinToInterrupt(flowPin));
+  static bool attached = false;
+  if (attached) detachInterrupt(digitalPinToInterrupt(flowPin));  // skip on first boot — nothing to detach yet
   flowPin = newPin;
   pinMode(flowPin, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(flowPin), flowPulseISR, FALLING);
+  attached = true;
 }
 
 // ── Relay ─────────────────────────────────────────────────────────────────────
@@ -333,7 +354,7 @@ void stopActive(int requireZone = -1) {
   uint32_t startPulses= activeStartPulses;
   activeZone = -1; activeEndTime = 0; activeStartTime = 0;
   portEXIT_CRITICAL(&stateMux);
-  uint32_t pulsesUsed = flowPulseCount - startPulses;
+  uint32_t pulsesUsed = readFlowPulses() - startPulses;
   uint16_t gallonsX10 = flowPulsesPerGallon > 0
     ? (uint16_t)min((uint32_t)65535U, pulsesUsed * 10U / flowPulsesPerGallon) : 0;
   addHistory({start, dur, (uint8_t)zone, trig, gallonsX10});
@@ -350,6 +371,7 @@ void allOffFn() {
 // ── Persistence ───────────────────────────────────────────────────────────────
 
 void loadConfig() {
+  if (prefsMux) xSemaphoreTake(prefsMux, portMAX_DELAY);
   prefs.begin("irr", true);
   for (int i = 0; i < NUM_ZONES; i++) {
     char k[10];
@@ -386,6 +408,7 @@ void loadConfig() {
   }
   uint8_t cfgVer = prefs.getUChar("cfgVer", 0);
   prefs.end();
+  if (prefsMux) xSemaphoreGive(prefsMux);
   if (cfgVer < 2) {
     for (int i = 0; i < NUM_ZONES; i++)
       for (int pr = 0; pr < NUM_PROGRAMS; pr++)
@@ -396,6 +419,7 @@ void loadConfig() {
 }
 
 void saveConfig() {
+  if (prefsMux) xSemaphoreTake(prefsMux, portMAX_DELAY);
   prefs.begin("irr", false);
   for (int i = 0; i < NUM_ZONES; i++) {
     char k[10];
@@ -429,6 +453,7 @@ void saveConfig() {
   }
   prefs.putUChar("cfgVer", 2);
   prefs.end();
+  if (prefsMux) xSemaphoreGive(prefsMux);
 }
 
 // ── Weather ───────────────────────────────────────────────────────────────────
@@ -447,7 +472,7 @@ void fetchWeather(bool manual = false) {
   for (int attempt = 0; attempt < 4; attempt++) {
     if (attempt > 0) {
       Serial.printf("Weather fetch: waiting 30min before retry %d/4\n", attempt + 1);
-      vTaskDelay(pdMS_TO_TICKS(30UL * 60UL * 1000UL));
+      vTaskDelay(pdMS_TO_TICKS(WEATHER_SLEEP_MS));
     }
     if (WiFi.status() != WL_CONNECTED) {
       Serial.printf("Weather fetch attempt %d/4: WiFi down, reconnecting\n", attempt + 1);
@@ -461,7 +486,10 @@ void fetchWeather(bool manual = false) {
       Serial.printf("Weather fetch: WiFi reconnected, IP: %s\n", WiFi.localIP().toString().c_str());
     }
     WiFiClientSecure client; client.setInsecure();
+    client.setHandshakeTimeout(10);     // TLS handshake timeout (seconds)
     HTTPClient http;
+    http.setConnectTimeout(5000);       // TCP connect timeout (ms)
+    http.setTimeout(10000);             // read timeout (ms)
     if (!http.begin(client, url)) {
       http.end(); code = -1;
       Serial.printf("Weather fetch attempt %d/4: http.begin failed\n", attempt + 1);
@@ -482,16 +510,25 @@ void fetchWeather(bool manual = false) {
   JsonDocument doc;
   DeserializationError err = deserializeJson(doc, body);
   if (err) { Serial.printf("Weather JSON error: %s\n", err.c_str()); pushWeatherLog(now,0,0,0,0,0,false,-2,manual); weatherFetchActive = false; return; }
-  float maxC  = doc["daily"]["temperature_2m_max"][0] | 100.0f;
-  float precip= doc["daily"]["precipitation_sum"][0]  | 0.0f;
-  float cloud = doc["daily"]["cloud_cover_mean"][0]   | 0.0f;
-  float windK = doc["daily"]["wind_speed_10m_max"][0] | 0.0f;
+  JsonObject daily = doc["daily"];
+  if (daily.isNull() || !daily["temperature_2m_max"].is<JsonArray>() ||
+      daily["temperature_2m_max"].as<JsonArray>().size() == 0) {
+    Serial.println("Weather JSON: unexpected structure");
+    pushWeatherLog(now,0,0,0,0,0,false,-2,manual);
+    weatherFetchActive = false; return;
+  }
+  float maxC  = daily["temperature_2m_max"][0].as<float>();
+  float precip= daily["precipitation_sum"][0]  | 0.0f;
+  float cloud = daily["cloud_cover_mean"][0]   | 0.0f;
+  float windK = daily["wind_speed_10m_max"][0] | 0.0f;
   float maxF  = maxC * 9.0f / 5.0f + 32.0f;
   bool cool   = (maxF < 65.0f) || (cloud > 80.0f) || (precip > 2.5f);
   bool hot    = !cool && (maxF > 90.0f) && (windK > 24.0f);
   weatherScale = cool ? coolDayPct : (hot ? hotDayPct : 100);
   lastWeatherFetch = now;
-  { Preferences p; p.begin("irr", false); p.putULong("wFetch", (unsigned long)now); p.end(); }
+  { if (prefsMux) xSemaphoreTake(prefsMux, portMAX_DELAY);
+    Preferences p; p.begin("irr", false); p.putULong("wFetch", (unsigned long)now); p.end();
+    if (prefsMux) xSemaphoreGive(prefsMux); }
   pushWeatherLog(now, maxF, precip, cloud, windK, weatherScale, true, 0, manual);
   Serial.printf("Weather: %.1f°F %.1fmm %.0f%% cloud %.1fkph wind → scale %d%%\n", maxF, precip, cloud, windK, weatherScale);
   weatherFetchActive = false;
@@ -500,6 +537,7 @@ void fetchWeather(bool manual = false) {
 // ── Scheduler ─────────────────────────────────────────────────────────────────
 
 void checkSchedules() {
+  if (!timeValid) return;
   time_t now; struct tm ti;
   time(&now); localtime_r(&now, &ti);
   for (int pr = 0; pr < NUM_PROGRAMS; pr++) {
@@ -533,8 +571,8 @@ void runQueue() {
     QEntry e = dequeue();
     activeZone = e.zone; activeEndTime = now + e.secs;
     activeStartTime = now; activeTrigger = e.trigger;
-    activeStartPulses = flowPulseCount;
     portEXIT_CRITICAL(&stateMux);
+    activeStartPulses = readFlowPulses();
     setRelay(e.zone, true);
     Serial.printf("Queue: Zone %d (%s) ON for %lus\n", e.zone, relayNames[e.zone], (unsigned long)e.secs);
   } else {
@@ -543,10 +581,18 @@ void runQueue() {
 }
 
 static String jsonEsc(const char* s) {
-  String r; r.reserve(strlen(s));
+  String r; r.reserve(strlen(s) + 4);
   for (; *s; s++) {
-    if (*s == '"' || *s == '\\') r += '\\';
-    r += *s;
+    switch (*s) {
+      case '"':  r += "\\\""; break;
+      case '\\': r += "\\\\"; break;
+      case '\n': r += "\\n";  break;
+      case '\r': r += "\\r";  break;
+      case '\t': r += "\\t";  break;
+      case '\b': r += "\\b";  break;
+      case '\f': r += "\\f";  break;
+      default:   r += *s;     break;
+    }
   }
   return r;
 }
@@ -987,6 +1033,7 @@ function fmtUptime(s){
   if(h>0) return h+'h '+m+'m';
   return m+'m';
 }
+let _lastCfgHash='';
 async function fetchConfig(){
   try{
     let d;
@@ -1001,8 +1048,9 @@ async function fetchConfig(){
                 threshPct:d.flowThreshPct??75, zfBase:d.zfBase||[], zfCnt:d.zfCnt||[]};
     updateFlowRow(d.flowGalToday??0, d.flowGalWeek??0);
     updateAlarmBanner();
-    render();
-  }catch(e){}
+    const h=JSON.stringify({z:zones,p:programs,a:activeZone,q:queued});
+    if(h!==_lastCfgHash){_lastCfgHash=h;render();}
+  }catch(e){console.error('fetchConfig:',e);}
 }
 
 function renderWeather(scale, coolPct, hotPct, lastFetch){
@@ -1428,7 +1476,7 @@ async function downloadLogs(){
       const ap=h>=12?'PM':'AM';h=h%12||12;
       return h+':'+m+' '+ap;
     }
-    function q(s){return'"'+String(s).replace(/"/g,'""')+'"';}
+    function q(s){return'"'+String(s).replace(/\r?\n/g,' ').replace(/"/g,'""')+'"';}
     function fs(s){const m=Math.floor(s/60),sc=s%60;return m>0?m+'m'+(sc?' '+sc+'s':''):sc+'s';}
     let csv='';
     csv+='=== WEATHER LOG ===\r\nDate,Time,Type,Max Temp (F),Precip (mm),Cloud %,Wind (kph),Scale %,Status\r\n';
@@ -1701,7 +1749,7 @@ async function fetchTemp(){
   try{
     const d=await(await fetch('/temp')).json();
     document.getElementById('chip-temp').textContent='🌡 ESP32: '+d.f.toFixed(1)+'°F';
-  }catch(e){}
+  }catch(e){console.error('fetchTemp:',e);}
 }
 
 let tgTimer=null, tgView='day', tgData=[];
@@ -1711,7 +1759,7 @@ async function refreshTempGraph(){
     const secs=tgView==='day'?86400:604800;
     tgData=await(await fetch('/temphistory?secs='+secs)).json();
     drawTempGraph(tgData);
-  }catch(e){}
+  }catch(e){console.error('refreshTempGraph:',e);}
 }
 async function setTgView(v){
   tgView=v;
@@ -1756,7 +1804,8 @@ function drawTempGraph(pts){
   const gW=W-m.l-m.r, gH=200-m.t-m.b;
   const fs=pts.map(p=>p.f);
   let minF=Infinity,maxF=-Infinity; fs.forEach(v=>{if(v<minF)minF=v;if(v>maxF)maxF=v;});
-  const mn=Math.floor(minF-2), mx=Math.ceil(maxF+2);
+  if(!isFinite(minF)){minF=32;maxF=100;}
+  const mn=Math.floor(minF-2), mx=Math.ceil(maxF+2)+(minF===maxF?1:0);
   const ts=pts.map(p=>p.t);
   const t0=ts[0], t1=ts[ts.length-1], tSpan=t1-t0||1;
   const xp=t=>(m.l+(t-t0)/tSpan*gW);
@@ -1816,7 +1865,7 @@ static String buildConfigJson() {
   time(&now); localtime_r(&now, &ti);
   long tzs = ti.tm_isdst > 0 ? (-7L*3600L) : (-8L*3600L);
   String j; j.reserve(1000);
-  j += "{\"epoch\":" + String((long)now) + ",\"tzSec\":" + String(tzs) + ",\"uptime\":" + String((unsigned long)(millis()/1000));
+  j += "{\"epoch\":" + String((long)now) + ",\"tzSec\":" + String(tzs) + ",\"uptime\":" + String((unsigned long)(millis()/1000)) + ",\"fw\":\"" FW_VERSION "\"";
   j += ",\"activeZone\":" + String(activeZone) + ",\"queued\":[";
   for (int i = 0; i < qSize; i++) {
     if (i) j += ",";
@@ -1874,6 +1923,7 @@ static String buildConfigJson() {
 
 void setup() {
   Serial.begin(115200);
+  prefsMux = xSemaphoreCreateMutex();
 
   led.begin();
   led.setBrightness(128);
@@ -1899,7 +1949,12 @@ void setup() {
   configTime(0, 0, "pool.ntp.org", "time.nist.gov");
   setenv("TZ", TZ_PACIFIC, 1); tzset();
   Serial.print("Syncing NTP");
-  { struct tm ti{}; for (int t=0;t<20&&!getLocalTime(&ti);t++){delay(500);Serial.print("."); } Serial.println(); }
+  { struct tm ti{};
+    for (int t = 0; t < 20 && !getLocalTime(&ti); t++) { delay(500); Serial.print("."); }
+    Serial.println();
+    if (ti.tm_year > 100) { timeValid = true; Serial.println("NTP sync OK"); }
+    else Serial.println("NTP sync failed — schedules paused until time is valid");
+  }
   { time_t t; time(&t); addTempSample(t, temperatureRead()); lastTempSample = millis(); }
 
   server.on("/", HTTP_GET, [](AsyncWebServerRequest* req){
@@ -1994,10 +2049,18 @@ void setup() {
     if (!req->hasParam("id")) { req->send(400,"text/plain","missing id"); return; }
     int id = req->getParam("id")->value().toInt();
     if (id < 0 || id >= NUM_PROGRAMS) { req->send(400,"text/plain","bad id"); return; }
-    if (req->hasParam("en"))   programs[id].enabled = req->getParam("en")->value()   == "1";
-    if (req->hasParam("h"))    programs[id].hour    = req->getParam("h")->value().toInt();
-    if (req->hasParam("m"))    programs[id].minute  = req->getParam("m")->value().toInt();
-    if (req->hasParam("days")) programs[id].days    = req->getParam("days")->value().toInt();
+    if (req->hasParam("en"))   programs[id].enabled = req->getParam("en")->value() == "1";
+    if (req->hasParam("h")) {
+      int h = req->getParam("h")->value().toInt();
+      if (h < 0 || h > 23) { req->send(400,"text/plain","bad hour"); return; }
+      programs[id].hour = (uint8_t)h;
+    }
+    if (req->hasParam("m")) {
+      int m = req->getParam("m")->value().toInt();
+      if (m < 0 || m > 59) { req->send(400,"text/plain","bad minute"); return; }
+      programs[id].minute = (uint8_t)m;
+    }
+    if (req->hasParam("days")) programs[id].days = (uint8_t)(req->getParam("days")->value().toInt() & 0x7F);
     saveConfig();
     Serial.printf("Program %d saved\n", id);
     req->send(200,"text/plain","ok");
@@ -2007,10 +2070,19 @@ void setup() {
     if (!req->hasParam("id")) { req->send(400,"text/plain","missing id"); return; }
     int idx = req->getParam("id")->value().toInt();
     if (idx < 0 || idx >= NUM_ZONES) { req->send(400,"text/plain","bad id"); return; }
-    if (req->hasParam("name")) req->getParam("name")->value().toCharArray(relayNames[idx], 32);
+    if (req->hasParam("name")) {
+      String nm = req->getParam("name")->value();
+      nm.trim();
+      if (nm.length() == 0 || nm.length() > 31) { req->send(400,"text/plain","bad name"); return; }
+      nm.toCharArray(relayNames[idx], 32);
+    }
     if (req->hasParam("pin")) {
       int pin = req->getParam("pin")->value().toInt();
       if (pin >= 0 && pin <= 48 && pin != relayPins[idx]) {
+        portENTER_CRITICAL(&stateMux);
+        bool zoneActive = (activeZone == idx);
+        portEXIT_CRITICAL(&stateMux);
+        if (zoneActive) { req->send(409,"text/plain","zone active"); return; }
         setRelay(idx, false);
         pinMode(relayPins[idx], INPUT);
         relayPins[idx] = (uint8_t)pin;
@@ -2021,7 +2093,7 @@ void setup() {
     for (int pr = 0; pr < NUM_PROGRAMS; pr++) {
       char pname[5];
       snprintf(pname, sizeof(pname), "d%d", pr);
-      if (req->hasParam(pname)) zoneDuration[idx][pr] = req->getParam(pname)->value().toInt();
+      if (req->hasParam(pname)) zoneDuration[idx][pr] = (uint16_t)constrain(req->getParam(pname)->value().toInt(), 0, MAX_RELAY_SECS);
       snprintf(pname, sizeof(pname), "zd%d", pr);
       if (req->hasParam(pname)) zoneDays[idx][pr] = (uint8_t)constrain(req->getParam(pname)->value().toInt(), 0, 127);
     }
@@ -2037,7 +2109,7 @@ void setup() {
         if (on) {
           uint32_t secs;
           if (req->hasParam("secs"))
-            secs = (uint32_t)constrain(req->getParam("secs")->value().toInt(), 1, 28800);
+            secs = (uint32_t)constrain(req->getParam("secs")->value().toInt(), 1, (int)MAX_RELAY_SECS);
           else
             secs = zoneDuration[idx][0] > 0 ? (uint32_t)zoneDuration[idx][0] : 300;
           enqueue(idx, secs);
@@ -2144,13 +2216,13 @@ void setup() {
   });
 
   server.on("/flowcal/start", HTTP_GET, [](AsyncWebServerRequest* req){
-    flowPulseCount = 0;
+    portENTER_CRITICAL(&flowMux); flowPulseCount = 0; portEXIT_CRITICAL(&flowMux);
     req->send(200, "text/plain", "ok");
   });
 
   server.on("/flowcal/stop", HTTP_GET, [](AsyncWebServerRequest* req){
     char buf[40];
-    snprintf(buf, sizeof(buf), "{\"pulses\":%lu}", (unsigned long)flowPulseCount);
+    snprintf(buf, sizeof(buf), "{\"pulses\":%lu}", (unsigned long)readFlowPulses());
     req->send(200, "application/json", buf);
   });
 
@@ -2191,7 +2263,7 @@ void setup() {
 
   DefaultHeaders::Instance().addHeader("Access-Control-Allow-Origin", "*");
   server.begin();
-  xTaskCreate(weatherTaskFn, "weather", 16384, NULL, 1, &weatherTaskHandle);
+  xTaskCreatePinnedToCore(weatherTaskFn, "weather", 16384, NULL, 1, &weatherTaskHandle, 1);
 }
 
 void loop() {
