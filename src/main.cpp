@@ -69,8 +69,13 @@ int tempHistHead = 0, tempHistCount = 0;
 unsigned long lastTempSample = 0;
 
 uint8_t coolDayPct    = 50;   // % to water on cool/overcast days (persisted)
-uint8_t hotDayPct     = 150;  // % to water on hot/windy days >90°F + >24kph wind (persisted)
+uint8_t hotDayPct     = 150;  // % to water on hot/windy days (persisted)
 uint8_t weatherScale  = 100;  // active scale factor — RAM only, resets to 100 on reboot
+uint8_t hotTempF      = 90;   // hot-day min temp threshold °F (persisted)
+uint8_t hotWindKph    = 24;   // hot-day min wind threshold kph (persisted)
+uint8_t coolTempF     = 65;   // cool-day max temp threshold °F (persisted)
+uint8_t coolCloudPct  = 80;   // cool-day min cloud cover % (persisted)
+uint8_t coolPrecipX10 = 25;   // cool-day min precip ×10 mm (25 = 2.5 mm) (persisted)
 time_t  lastWeatherFetch = 0;
 time_t  lastWeatherAttempt = 0;
 volatile bool weatherFetchActive = false;
@@ -395,6 +400,11 @@ void loadConfig() {
   historyDays     = prefs.getUChar("hdays", 7);
   coolDayPct      = prefs.getUChar("wPct",  50);
   hotDayPct       = prefs.getUChar("wHPct", 150);
+  hotTempF        = prefs.getUChar("wHTF",  90);
+  hotWindKph      = prefs.getUChar("wHWK",  24);
+  coolTempF       = prefs.getUChar("wCTF",  65);
+  coolCloudPct    = prefs.getUChar("wCCP",  80);
+  coolPrecipX10   = prefs.getUChar("wCPX",  25);
   lastWeatherFetch    = (time_t)prefs.getULong("wFetch",   0);
   flowPin             = prefs.getUChar("flowPin", 16);
   flowPulsesPerGallon = prefs.getULong("flowPPG",  0);
@@ -440,6 +450,11 @@ void saveConfig() {
   prefs.putUChar("hdays",  historyDays);
   prefs.putUChar("wPct",   coolDayPct);
   prefs.putUChar("wHPct",  hotDayPct);
+  prefs.putUChar("wHTF",   hotTempF);
+  prefs.putUChar("wHWK",   hotWindKph);
+  prefs.putUChar("wCTF",   coolTempF);
+  prefs.putUChar("wCCP",   coolCloudPct);
+  prefs.putUChar("wCPX",   coolPrecipX10);
   prefs.putULong("wFetch",   (unsigned long)lastWeatherFetch);
   prefs.putUChar("flowPin",  flowPin);
   prefs.putULong("flowPPG",  flowPulsesPerGallon);
@@ -522,8 +537,8 @@ void fetchWeather(bool manual = false) {
   float cloud = daily["cloud_cover_mean"][0]   | 0.0f;
   float windK = daily["wind_speed_10m_max"][0] | 0.0f;
   float maxF  = maxC * 9.0f / 5.0f + 32.0f;
-  bool cool   = (maxF < 65.0f) || (cloud > 80.0f) || (precip > 2.5f);
-  bool hot    = !cool && (maxF > 90.0f) && (windK > 24.0f);
+  bool cool   = (maxF < (float)coolTempF) || (cloud > (float)coolCloudPct) || (precip > coolPrecipX10 / 10.0f);
+  bool hot    = !cool && (maxF > (float)hotTempF) && (windK > (float)hotWindKph);
   weatherScale = cool ? coolDayPct : (hot ? hotDayPct : 100);
   lastWeatherFetch = now;
   { if (prefsMux) xSemaphoreTake(prefsMux, portMAX_DELAY);
@@ -538,23 +553,39 @@ void fetchWeather(bool manual = false) {
 
 void checkSchedules() {
   if (!timeValid) return;
+  static const char* DOW[] = {"Sun","Mon","Tue","Wed","Thu","Fri","Sat"};
   time_t now; struct tm ti;
   time(&now); localtime_r(&now, &ti);
   for (int pr = 0; pr < NUM_PROGRAMS; pr++) {
     WateringProgram& p = programs[pr];
-    if (!p.enabled) continue;
-    if (!(p.days & (1 << ti.tm_wday))) continue;
+    // Only evaluate at the scheduled minute, and dedupe so we log/fire once per occurrence
+    // (checkSchedules runs every 15s, so the target minute is seen ~4 times).
     if (ti.tm_hour != p.hour || ti.tm_min != p.minute) continue;
     if (now - progLastFired[pr] < 120) continue;
     progLastFired[pr] = now;
-    int n = 0;
-    for (int z = 0; z < NUM_ZONES; z++)
-      if (zoneDuration[z][pr] > 0 && (zoneDays[z][pr] & (1 << ti.tm_wday))) {
-        uint32_t dur = (uint32_t)zoneDuration[z][pr] * weatherScale / 100;
-        if (dur < 1) dur = 1;
-        enqueue(z, dur, pr + 1); n++;
-      }
-    Serial.printf("Program %d (%s): queued %d zones\n", pr, PROG_NAMES[pr], n);
+    if (!p.enabled) {
+      Serial.printf("Program %d (%s): due now but skipped — program disabled\n", pr, PROG_NAMES[pr]);
+      continue;
+    }
+    if (!(p.days & (1 << ti.tm_wday))) {
+      Serial.printf("Program %d (%s): due now but skipped — %s not in program days (mask 0x%02X)\n",
+                    pr, PROG_NAMES[pr], DOW[ti.tm_wday], p.days);
+      continue;
+    }
+    int n = 0, configured = 0;
+    for (int z = 0; z < NUM_ZONES; z++) {
+      if (zoneDuration[z][pr] == 0) continue;
+      configured++;
+      if (!(zoneDays[z][pr] & (1 << ti.tm_wday))) continue;
+      uint32_t dur = (uint32_t)zoneDuration[z][pr] * weatherScale / 100;
+      if (dur < 1) dur = 1;
+      enqueue(z, dur, pr + 1); n++;
+    }
+    if (n == 0 && configured > 0)
+      Serial.printf("Program %d (%s): queued 0 zones — all %d configured zones have %s disabled at zone level\n",
+                    pr, PROG_NAMES[pr], configured, DOW[ti.tm_wday]);
+    else
+      Serial.printf("Program %d (%s): queued %d zones\n", pr, PROG_NAMES[pr], n);
   }
 }
 
@@ -883,6 +914,24 @@ body.light .flow-alarm-x{color:#dc2626}
 body.light .fcal-zone-sel{background:#f8fafc;border-color:#94a3b8;color:#1e293b;color-scheme:light}
 body.light .flow-row .weather-badge{color:#0369a1;border-color:#cbd5e1}
 body.color .fcal-zone-sel{background:#171717;border-color:#606060;color:#e5e5e5;color-scheme:dark}
+.wcond-section{margin-bottom:.85rem}
+.wcond-head{font-size:.72rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;margin-bottom:.5rem}
+.wcond-head.cool{color:#7dd3fc}
+.wcond-head.hot{color:#fb923c}
+.wcond-note{font-size:.62rem;color:#64748b;margin-bottom:.45rem}
+.wcond-row{display:flex;align-items:center;gap:.4rem;margin-bottom:.4rem}
+.wcond-row label{font-size:.65rem;color:#94a3b8;letter-spacing:.06em;text-transform:uppercase;flex:1;min-width:0}
+.wcond-row input{width:4.2rem;background:#0f172a;border:1px solid #475569;border-radius:.3rem;color:#e2e8f0;padding:.3rem .4rem;font-size:.9rem;text-align:center;-moz-appearance:textfield}
+.wcond-row input::-webkit-inner-spin-button,.wcond-row input::-webkit-outer-spin-button{-webkit-appearance:none}
+.wcond-row input:focus{outline:none;border-color:#7dd3fc}
+.wcond-row span{font-size:.68rem;color:#64748b;white-space:nowrap}
+.wcond-sep{border:none;border-top:1px solid #334155;margin:.7rem 0}
+body.light .wcond-head.cool{color:#0369a1}
+body.light .wcond-row label{color:#64748b}
+body.light .wcond-row input{background:#f8fafc;border-color:#94a3b8;color:#1e293b}
+body.light .wcond-row span{color:#94a3b8}
+body.light .wcond-note{color:#94a3b8}
+body.color .wcond-row input{background:#171717;border-color:#606060;color:#e5e5e5}
 </style>
 </head>
 <body>
@@ -912,13 +961,14 @@ body.color .fcal-zone-sel{background:#171717;border-color:#606060;color:#e5e5e5;
   <span class="weather-badge" id="weather-badge">
     <span onclick="openWeatherLog()" style="cursor:pointer;padding:10px;margin:-10px;flex-shrink:0;display:inline-flex;align-items:center;justify-content:center"><span id="weather-dot" style="width:7px;height:7px;border-radius:50%;background:#334155;display:inline-block"></span></span>
     <div class="weather-rows">
-      <span>&#9729; Cool day:</span>
+      <span style="cursor:pointer" onclick="openWeatherConds()" title="Edit conditions">&#9729; Cool day:</span>
       <input type="number" class="weather-pct" id="cool-pct-input" min="10" max="90" value="50" onchange="saveCoolPct()">
       <span>%</span>
-      <span>&#127774; Hot day:</span>
+      <span style="cursor:pointer" onclick="openWeatherConds()" title="Edit conditions">&#127774; Hot day:</span>
       <input type="number" class="weather-pct" id="hot-pct-input" min="100" max="200" value="150" onchange="saveHotPct()">
       <span>%</span>
     </div>
+    <span onclick="openWeatherConds()" title="Edit conditions" style="cursor:pointer;color:#64748b;font-size:.9rem;flex-shrink:0;padding:6px;margin:-6px;display:inline-flex;align-items:center;line-height:1">&#9881;</span>
   </span>
   <button class="log-trigger" onclick="openFlowCal()">&#128167; Flow Cal</button>
 </div>
@@ -996,6 +1046,29 @@ body.color .fcal-zone-sel{background:#171717;border-color:#606060;color:#e5e5e5;
     </div>
   </div>
 </div>
+<div class="modal-ov" id="wcond-ov" style="display:none" onclick="if(event.target===this)closeWeatherConds()">
+  <div class="modal" style="width:320px;max-width:92vw">
+    <div class="modal-title" id="wcond-drag">&#9881; Weather Conditions</div>
+    <div class="wcond-section">
+      <div class="wcond-head cool">&#9729; Cool day — waters at <span id="wcond-cool-pct">50</span>%</div>
+      <div class="wcond-note">Any one of these triggers a cool day:</div>
+      <div class="wcond-row"><label>Temp below</label><input type="number" id="wcond-ctf" min="30" max="90" value="65"><span>&#176;F</span></div>
+      <div class="wcond-row"><label>Cloud cover above</label><input type="number" id="wcond-ccp" min="10" max="100" value="80"><span>%</span></div>
+      <div class="wcond-row"><label>Precipitation above</label><input type="number" id="wcond-cpx" min="0" max="9.9" step="0.1" value="2.5"><span>mm</span></div>
+    </div>
+    <hr class="wcond-sep">
+    <div class="wcond-section">
+      <div class="wcond-head hot">&#127774; Hot day — waters at <span id="wcond-hot-pct">150</span>%</div>
+      <div class="wcond-note">Both must be true (and not a cool day):</div>
+      <div class="wcond-row"><label>Temp above</label><input type="number" id="wcond-htf" min="50" max="120" value="90"><span>&#176;F</span></div>
+      <div class="wcond-row"><label>Wind above</label><input type="number" id="wcond-hwk" min="0" max="80" value="24"><span>kph</span></div>
+    </div>
+    <div class="modal-btns">
+      <button class="mbtn sbtn" onclick="saveWeatherConds()">Save</button>
+      <button class="mbtn mbtn-cancel" onclick="closeWeatherConds()">Cancel</button>
+    </div>
+  </div>
+</div>
 <div class="modal-ov" id="rn-modal" style="display:none">
   <div class="modal">
     <div class="modal-title" id="rn-title">Run Zone</div>
@@ -1021,8 +1094,9 @@ body.color .fcal-zone-sel{background:#171717;border-color:#606060;color:#e5e5e5;
   </div>
 </div>
 <script>
-let programs=[],zones=[],activeZone=-1,queued=[],tzSec=0,editing=new Set(),expanded=new Set(),daysSel={};
+let programs=[],zones=[],activeZone=-1,queued=[],tzSec=0,editing=new Set(),expanded=new Set();
 let flowConfig={pin:16,ppg:0,alarm:0,threshPct:75,zfBase:[],zfCnt:[]};
+let weatherConds={hotTempF:90,hotWindKph:24,coolTempF:65,coolCloudPct:80,coolPrecipX10:25};
 let fcalRunning=false;
 let flowAlarmDismissed=false;
 const DAYS=['S','M','T','W','T','F','S'];
@@ -1043,7 +1117,8 @@ async function fetchConfig(){
     activeZone=d.activeZone; queued=d.queued||[];
     initClock(d.epoch);
     if(d.uptime!=null) document.getElementById('uptime').textContent='Uptime: '+fmtUptime(d.uptime);
-    renderWeather(d.weatherScale??100, d.coolDayPct??50, d.hotDayPct??150, d.lastWeatherFetch??0);
+    renderWeather(d.weatherScale??100, d.coolDayPct??50, d.hotDayPct??150, d.lastWeatherFetch??0,
+      {hotTempF:d.hotTempF??90,hotWindKph:d.hotWindKph??24,coolTempF:d.coolTempF??65,coolCloudPct:d.coolCloudPct??80,coolPrecipX10:d.coolPrecipX10??25});
     flowConfig={pin:d.flowPin??16, ppg:d.flowPPG??0, alarm:d.flowAlarm??0,
                 threshPct:d.flowThreshPct??75, zfBase:d.zfBase||[], zfCnt:d.zfCnt||[]};
     updateFlowRow(d.flowGalToday??0, d.flowGalWeek??0);
@@ -1053,7 +1128,7 @@ async function fetchConfig(){
   }catch(e){console.error('fetchConfig:',e);}
 }
 
-function renderWeather(scale, coolPct, hotPct, lastFetch){
+function renderWeather(scale, coolPct, hotPct, lastFetch, conds){
   const badge=document.getElementById('weather-badge');
   const dot=document.getElementById('weather-dot');
   const ci=document.getElementById('cool-pct-input');
@@ -1064,6 +1139,13 @@ function renderWeather(scale, coolPct, hotPct, lastFetch){
   if(dot){
     const age=lastFetch?Math.floor(Date.now()/1000)-lastFetch:Infinity;
     dot.style.background=age<86400?'#22c55e':lastFetch?'#f87171':'#334155';
+  }
+  if(conds){
+    weatherConds=conds;
+    const cp=document.getElementById('wcond-cool-pct');
+    const hp=document.getElementById('wcond-hot-pct');
+    if(cp)cp.textContent=coolPct;
+    if(hp)hp.textContent=hotPct;
   }
 }
 
@@ -1084,6 +1166,36 @@ async function saveHotPct(){
   if(v!==old) pushCL({type:'hotPct',old,val:v});
   inp.dataset.saved=v;
   await fetch('/sethotpct?pct='+v);
+}
+
+function openWeatherConds(){
+  const cp=document.getElementById('wcond-cool-pct');
+  const hp=document.getElementById('wcond-hot-pct');
+  if(cp)cp.textContent=document.getElementById('cool-pct-input')?.value??50;
+  if(hp)hp.textContent=document.getElementById('hot-pct-input')?.value??150;
+  document.getElementById('wcond-ctf').value=weatherConds.coolTempF;
+  document.getElementById('wcond-ccp').value=weatherConds.coolCloudPct;
+  document.getElementById('wcond-cpx').value=(weatherConds.coolPrecipX10/10).toFixed(1);
+  document.getElementById('wcond-htf').value=weatherConds.hotTempF;
+  document.getElementById('wcond-hwk').value=weatherConds.hotWindKph;
+  document.getElementById('wcond-ov').style.display='flex';
+}
+function closeWeatherConds(){document.getElementById('wcond-ov').style.display='none';}
+async function saveWeatherConds(){
+  const ctf=parseInt(document.getElementById('wcond-ctf').value);
+  const ccp=parseInt(document.getElementById('wcond-ccp').value);
+  const cpxF=parseFloat(document.getElementById('wcond-cpx').value);
+  const htf=parseInt(document.getElementById('wcond-htf').value);
+  const hwk=parseInt(document.getElementById('wcond-hwk').value);
+  if([ctf,ccp,htf,hwk].some(isNaN)||isNaN(cpxF))return;
+  if(ctf<30||ctf>90||ccp<10||ccp>100||cpxF<0||cpxF>9.9||htf<50||htf>120||hwk<0||hwk>80)return;
+  const cpx=Math.round(cpxF*10);
+  const old={...weatherConds};
+  const changed=ctf!==old.coolTempF||ccp!==old.coolCloudPct||cpx!==old.coolPrecipX10||htf!==old.hotTempF||hwk!==old.hotWindKph;
+  if(changed) pushCL({type:'weatherCond',old,val:{coolTempF:ctf,coolCloudPct:ccp,coolPrecipX10:cpx,hotTempF:htf,hotWindKph:hwk}});
+  weatherConds={coolTempF:ctf,coolCloudPct:ccp,coolPrecipX10:cpx,hotTempF:htf,hotWindKph:hwk};
+  await fetch('/setweatherconds?htf='+htf+'&hwk='+hwk+'&ctf='+ctf+'&ccp='+ccp+'&cpx='+cpx);
+  closeWeatherConds();
 }
 
 let clockBase=0,clockSync=0;
@@ -1108,8 +1220,7 @@ function renderPrograms(){
   el.innerHTML='';
   const busy=activeZone>=0||queued.length>0;
   programs.forEach((p,i)=>{
-    if(daysSel['p'+i]===undefined)daysSel['p'+i]=p.days;
-    const dh=DAYS.map((l,d)=>'<button class="day'+(((daysSel['p'+i]>>d)&1)?' on':'')+'" onclick="togglePDay('+i+','+d+')">'+l+'</button>').join('');
+    const dh=DAYS.map((l,d)=>'<button class="day'+(((p.days>>d)&1)?' on':'')+'" onclick="togglePDay('+i+','+d+')">'+l+'</button>').join('');
     const c=document.createElement('div');
     c.className='pcard'+(p.enabled?' on':'');
     c.innerHTML='<div class="phead"><span class="pname">'+esc(p.name)+'</span>'+
@@ -1186,28 +1297,27 @@ function renderZones(){
 }
 
 async function togglePDay(pi,di){
-  const oldBit=(daysSel['p'+pi]>>di)&1;
-  daysSel['p'+pi]^=(1<<di);
+  const oldBit=(programs[pi].days>>di)&1;
+  programs[pi].days^=(1<<di);
   pushCL({type:'progDay',pi,prog:programs[pi].name,day:di,val:oldBit^1});
   renderPrograms();
-  await fetch('/setprogram?id='+pi+'&en='+(programs[pi].enabled?1:0)+'&h='+programs[pi].h+'&m='+programs[pi].m+'&days='+daysSel['p'+pi]);
+  await fetch('/setprogram?id='+pi+'&en='+(programs[pi].enabled?1:0)+'&h='+programs[pi].h+'&m='+programs[pi].m+'&days='+programs[pi].days);
 }
 
 async function toggleProg(i){
   programs[i].enabled=!programs[i].enabled;
   pushCL({type:'progEn',pi:i,prog:programs[i].name,val:programs[i].enabled});
-  await fetch('/setprogram?id='+i+'&en='+(programs[i].enabled?1:0)+'&h='+programs[i].h+'&m='+programs[i].m+'&days='+(daysSel['p'+i]??programs[i].days));
+  await fetch('/setprogram?id='+i+'&en='+(programs[i].enabled?1:0)+'&h='+programs[i].h+'&m='+programs[i].m+'&days='+programs[i].days);
   render();
 }
 
 async function saveProg(i){
   const t=document.getElementById('pt'+i).value;
   const[h,m]=t?t.split(':').map(Number):[programs[i].h,programs[i].m];
-  const days=daysSel['p'+i]??programs[i].days;
   if(h!==programs[i].h||m!==programs[i].m)
     pushCL({type:'progTime',pi:i,prog:programs[i].name,old:pad(programs[i].h)+':'+pad(programs[i].m),val:pad(h)+':'+pad(m)});
-  await fetch('/setprogram?id='+i+'&en='+(programs[i].enabled?1:0)+'&h='+h+'&m='+m+'&days='+days);
-  programs[i].h=h;programs[i].m=m;programs[i].days=days;
+  await fetch('/setprogram?id='+i+'&en='+(programs[i].enabled?1:0)+'&h='+h+'&m='+m+'&days='+programs[i].days);
+  programs[i].h=h;programs[i].m=m;
   render();
 }
 
@@ -1446,6 +1556,8 @@ async function renderChangeLog(){
         html+=clRow(zn+'Cool day %</span>',null,['#22c55e',e.old+'% → '+e.val+'%'],ts);
       else if(t==='hotPct')
         html+=clRow(zn+'Hot day %</span>',null,['#fb923c',e.old+'% → '+e.val+'%'],ts);
+      else if(t==='weatherCond')
+        html+=clRow(zn+'Weather conditions</span>',null,['#7dd3fc','updated'],ts);
     });
     html+='</div></div>';
   });
@@ -1507,6 +1619,7 @@ async function downloadLogs(){
       else if(t==='zonePin'){what=q(e.name||'');detail='GPIO pin '+e.old+' → '+e.val;}
       else if(t==='coolPct'){what='Cool day %';detail=e.old+'% → '+e.val+'%';}
       else if(t==='hotPct'){what='Hot day %';detail=e.old+'% → '+e.val+'%';}
+      else if(t==='weatherCond'){what='Weather conditions';detail='updated';}
       csv+=csvDate(e.ts,true)+','+csvTime(e.ts,true)+','+t+','+what+','+detail+'\r\n';
     });
     csv+='\r\n=== TEMPERATURE HISTORY ===\r\nDate,Time,Temp (F)\r\n';
@@ -1733,6 +1846,7 @@ function makeDraggable(el,handle){
   makeDraggable(document.querySelector('#wlog-ov .log-modal'),document.querySelector('#wlog-ov .log-head'));
   makeDraggable(document.querySelector('#tg-ov .tg-modal'),document.querySelector('#tg-ov .tg-head'));
   makeDraggable(document.querySelector('#fcal-ov .modal'),document.querySelector('#fcal-ov .modal-title'));
+  makeDraggable(document.querySelector('#wcond-ov .modal'),document.querySelector('#wcond-drag'));
   makeDraggable(document.querySelector('#rn-modal .modal'),document.querySelector('#rn-modal .modal-title'));
   document.addEventListener('keydown',function(e){
     if(e.key!=='Escape')return;
@@ -1741,6 +1855,7 @@ function makeDraggable(el,handle){
     else if(document.getElementById('wlog-ov').style.display!=='none')closeWeatherLog();
     else if(document.getElementById('tg-ov').style.display!=='none')closeTempGraph();
     else if(document.getElementById('fcal-ov').style.display!=='none')closeFlowCal();
+    else if(document.getElementById('wcond-ov').style.display!=='none')closeWeatherConds();
     else if(document.getElementById('rn-modal').style.display!=='none')rnCancel();
   });
 })();
@@ -1893,7 +2008,7 @@ static String buildConfigJson() {
     }
     j += "]}";
   }
-  j += "],\"weatherScale\":" + String(weatherScale) + ",\"coolDayPct\":" + String(coolDayPct) + ",\"hotDayPct\":" + String(hotDayPct) + ",\"lastWeatherFetch\":" + String((long)lastWeatherFetch);
+  j += "],\"weatherScale\":" + String(weatherScale) + ",\"coolDayPct\":" + String(coolDayPct) + ",\"hotDayPct\":" + String(hotDayPct) + ",\"lastWeatherFetch\":" + String((long)lastWeatherFetch) + ",\"hotTempF\":" + String(hotTempF) + ",\"hotWindKph\":" + String(hotWindKph) + ",\"coolTempF\":" + String(coolTempF) + ",\"coolCloudPct\":" + String(coolCloudPct) + ",\"coolPrecipX10\":" + String(coolPrecipX10);
   // flow stats
   float galToday = 0, galWeek = 0;
   if (flowPulsesPerGallon > 0) {
@@ -2007,6 +2122,16 @@ void setup() {
       hotDayPct = (uint8_t)constrain(req->getParam("pct")->value().toInt(), 100, 200);
       saveConfig();
     }
+    req->send(200, "text/plain", "ok");
+  });
+
+  server.on("/setweatherconds", HTTP_GET, [](AsyncWebServerRequest* req){
+    if (req->hasParam("htf"))  hotTempF      = (uint8_t)constrain(req->getParam("htf")->value().toInt(),  50, 120);
+    if (req->hasParam("hwk"))  hotWindKph    = (uint8_t)constrain(req->getParam("hwk")->value().toInt(),   0,  80);
+    if (req->hasParam("ctf"))  coolTempF     = (uint8_t)constrain(req->getParam("ctf")->value().toInt(),  30,  90);
+    if (req->hasParam("ccp"))  coolCloudPct  = (uint8_t)constrain(req->getParam("ccp")->value().toInt(),  10, 100);
+    if (req->hasParam("cpx"))  coolPrecipX10 = (uint8_t)constrain(req->getParam("cpx")->value().toInt(),   0,  99);
+    saveConfig();
     req->send(200, "text/plain", "ok");
   });
 
