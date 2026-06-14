@@ -977,7 +977,6 @@ body.color .wcond-row input{background:#171717;border-color:#606060;color:#e5e5e
     <span style="flex-shrink:0">&#128167;</span>
     <div style="display:flex;flex-direction:column;gap:.15rem;font-size:.88rem">
       <span>Today: <b id="fl-today">0.0</b> gal &nbsp; Week: <b id="fl-week">0.0</b> gal</span>
-      <span style="font-size:.72rem;color:#94a3b8">GPIO<span id="fl-pin">--</span> &bull; <span id="fl-ppg">--</span> pulses/gal</span>
     </div>
   </span>
 </div>
@@ -1702,8 +1701,6 @@ function updateFlowRow(galToday, galWeek){
     row.style.display='flex';
     document.getElementById('fl-today').textContent=galToday.toFixed(1);
     document.getElementById('fl-week').textContent=galWeek.toFixed(1);
-    document.getElementById('fl-pin').textContent=flowConfig.pin;
-    document.getElementById('fl-ppg').textContent=flowConfig.ppg.toLocaleString();
   } else {
     row.style.display='none';
   }
