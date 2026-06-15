@@ -1057,7 +1057,7 @@ body.color .wcond-row input{background:#171717;border-color:#606060;color:#e5e5e
     <div class="modal-title" id="wcond-drag">&#9881; Weather Conditions</div>
     <div class="wcond-section">
       <div class="wcond-head cool">&#9729; Cool day — waters at <span id="wcond-cool-pct">50</span>%</div>
-      <div class="wcond-note">Any one of these triggers a cool day:</div>
+      <div class="wcond-note">Any one of these triggers a cool day (unless it's a hot day):</div>
       <div class="wcond-row"><label>Temp below</label><input type="number" id="wcond-ctf" min="30" max="90" value="65"><span>&#176;F</span></div>
       <div class="wcond-row"><label>Cloud cover above</label><input type="number" id="wcond-ccp" min="10" max="100" value="80"><span>%</span></div>
       <div class="wcond-row"><label>Precipitation above</label><input type="number" id="wcond-cpx" min="0" max="9.9" step="0.1" value="2.5"><span>mm</span></div>
@@ -1067,7 +1067,7 @@ body.color .wcond-row input{background:#171717;border-color:#606060;color:#e5e5e
     <hr class="wcond-sep">
     <div class="wcond-section">
       <div class="wcond-head hot">&#127774; Hot day — waters at <span id="wcond-hot-pct">150</span>%</div>
-      <div class="wcond-note">Both must be true (and not a cool day):</div>
+      <div class="wcond-note">Both must be true — takes priority over a cool day:</div>
       <div class="wcond-row"><label>Temp above</label><input type="number" id="wcond-htf" min="50" max="120" value="90"><span>&#176;F</span></div>
       <div class="wcond-row"><label>Wind above</label><input type="number" id="wcond-hwk" min="0" max="80" value="24"><span>kph</span></div>
     </div>
