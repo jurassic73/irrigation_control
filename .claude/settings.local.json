@@ -61,7 +61,23 @@
       "Bash(ls platformio.ini && which pio 2>/dev/null || ls ~/.platformio/penv/bin/pio 2>/dev/null || echo \"pio not on PATH\")",
       "Read(//Users/hanssr/.platformio/penv/bin/**)",
       "Bash(~/.platformio/penv/bin/pio run *)",
-      "Bash(~/.platformio/penv/bin/pip install *)"
+      "Bash(~/.platformio/penv/bin/pip install *)",
+      "Bash(echo \"exit: $?\")",
+      "Bash(GIT_EDITOR=true git rebase --continue)",
+      "Bash(git diff-index *)",
+      "Bash(git update-index *)",
+      "Bash(echo \"continue-exit: $?\")",
+      "Bash(git --version)",
+      "Bash(echo \"check-exit: $?\")",
+      "Bash(git reset *)",
+      "Bash(git commit *)",
+      "Bash(echo \"commit-exit: $?\")",
+      "Bash(git stash *)",
+      "Bash(echo \"=== restore stashed settings ===\"; git stash pop; echo \"=== remove leftover rebase-merge if present ===\"; rm -rf .git/rebase-merge 2>/dev/null; ls .git/rebase-merge 2>/dev/null && echo \"STILL PRESENT\" || echo \"rebase-merge gone\"; echo \"=== final status ===\"; git status; echo \"=== log ===\"; git log --oneline -4)",
+      "Bash(echo \"=== exit: $? \\(no output = current file already has everything in stash\\) ===\")"
+    ],
+    "additionalDirectories": [
+      "D:\\hans_docs\\github\\irrigation_control\\.git\\rebase-merge"
     ]
   }
 }

@@ -540,13 +540,13 @@ void fetchWeather(bool manual = false) {
   float cloud = daily["cloud_cover_mean"][0]   | 0.0f;
   float windK = daily["wind_speed_10m_max"][0] | 0.0f;
   float maxF  = maxC * 9.0f / 5.0f + 32.0f;
-  // Actual rain always counts as cool. Cloud cover / low temp only count when the day
-  // isn't hot enough to override them (>= hotOverrideF).
+  // A hot + windy day wins above all (even rain). Otherwise actual rain always counts as
+  // cool; cloud cover / low temp only count when not hot enough to override (>= hotOverrideF).
+  bool hot      = (maxF > (float)hotTempF) && (windK > (float)hotWindKph);
   bool rained   = (precip > coolPrecipX10 / 10.0f);
   bool override_= (maxF >= (float)hotOverrideF);
-  bool cool     = rained || (!override_ && ((maxF < (float)coolTempF) || (cloud > (float)coolCloudPct)));
-  bool hot      = !cool && (maxF > (float)hotTempF) && (windK > (float)hotWindKph);
-  weatherScale = cool ? coolDayPct : (hot ? hotDayPct : 100);
+  bool cool     = !hot && (rained || (!override_ && ((maxF < (float)coolTempF) || (cloud > (float)coolCloudPct))));
+  weatherScale = hot ? hotDayPct : (cool ? coolDayPct : 100);
   lastWeatherFetch = now;
   { if (prefsMux) xSemaphoreTake(prefsMux, portMAX_DELAY);
     Preferences p; p.begin("irr", false); p.putULong("wFetch", (unsigned long)now); p.end();
@@ -1062,12 +1062,12 @@ body.color .wcond-row input{background:#171717;border-color:#606060;color:#e5e5e
       <div class="wcond-row"><label>Cloud cover above</label><input type="number" id="wcond-ccp" min="10" max="100" value="80"><span>%</span></div>
       <div class="wcond-row"><label>Precipitation above</label><input type="number" id="wcond-cpx" min="0" max="9.9" step="0.1" value="2.5"><span>mm</span></div>
       <div class="wcond-row"><label>Override above</label><input type="number" id="wcond-hof" min="50" max="120" value="85"><span>&#176;F</span></div>
-      <div class="wcond-note">At/above the override temp, cloud &amp; low-temp are ignored — but real rain still counts.</div>
+      <div class="wcond-note">At/above the override temp, cloud &amp; low-temp are ignored — real rain still counts as cool (unless it's also a hot, windy day).</div>
     </div>
     <hr class="wcond-sep">
     <div class="wcond-section">
       <div class="wcond-head hot">&#127774; Hot day — waters at <span id="wcond-hot-pct">150</span>%</div>
-      <div class="wcond-note">Both must be true — takes priority over a cool day:</div>
+      <div class="wcond-note">Both must be true — wins over everything, even rain:</div>
       <div class="wcond-row"><label>Temp above</label><input type="number" id="wcond-htf" min="50" max="120" value="90"><span>&#176;F</span></div>
       <div class="wcond-row"><label>Wind above</label><input type="number" id="wcond-hwk" min="0" max="80" value="24"><span>kph</span></div>
     </div>
