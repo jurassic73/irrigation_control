@@ -73,6 +73,7 @@ uint8_t hotDayPct     = 150;  // % to water on hot/windy days (persisted)
 uint8_t weatherScale  = 100;  // active scale factor — RAM only, resets to 100 on reboot
 uint8_t hotTempF      = 90;   // hot-day min temp threshold °F (persisted)
 uint8_t hotWindKph    = 24;   // hot-day min wind threshold kph (persisted)
+uint8_t hotOverrideF  = 85;   // at/above this temp, cloud/low-temp can't force a cool day (persisted)
 uint8_t coolTempF     = 65;   // cool-day max temp threshold °F (persisted)
 uint8_t coolCloudPct  = 80;   // cool-day min cloud cover % (persisted)
 uint8_t coolPrecipX10 = 25;   // cool-day min precip ×10 mm (25 = 2.5 mm) (persisted)
@@ -402,6 +403,7 @@ void loadConfig() {
   hotDayPct       = prefs.getUChar("wHPct", 150);
   hotTempF        = prefs.getUChar("wHTF",  90);
   hotWindKph      = prefs.getUChar("wHWK",  24);
+  hotOverrideF    = prefs.getUChar("wHOF",  85);
   coolTempF       = prefs.getUChar("wCTF",  65);
   coolCloudPct    = prefs.getUChar("wCCP",  80);
   coolPrecipX10   = prefs.getUChar("wCPX",  25);
@@ -452,6 +454,7 @@ void saveConfig() {
   prefs.putUChar("wHPct",  hotDayPct);
   prefs.putUChar("wHTF",   hotTempF);
   prefs.putUChar("wHWK",   hotWindKph);
+  prefs.putUChar("wHOF",   hotOverrideF);
   prefs.putUChar("wCTF",   coolTempF);
   prefs.putUChar("wCCP",   coolCloudPct);
   prefs.putUChar("wCPX",   coolPrecipX10);
@@ -537,8 +540,12 @@ void fetchWeather(bool manual = false) {
   float cloud = daily["cloud_cover_mean"][0]   | 0.0f;
   float windK = daily["wind_speed_10m_max"][0] | 0.0f;
   float maxF  = maxC * 9.0f / 5.0f + 32.0f;
-  bool cool   = (maxF < (float)coolTempF) || (cloud > (float)coolCloudPct) || (precip > coolPrecipX10 / 10.0f);
-  bool hot    = !cool && (maxF > (float)hotTempF) && (windK > (float)hotWindKph);
+  // Actual rain always counts as cool. Cloud cover / low temp only count when the day
+  // isn't hot enough to override them (>= hotOverrideF).
+  bool rained   = (precip > coolPrecipX10 / 10.0f);
+  bool override_= (maxF >= (float)hotOverrideF);
+  bool cool     = rained || (!override_ && ((maxF < (float)coolTempF) || (cloud > (float)coolCloudPct)));
+  bool hot      = !cool && (maxF > (float)hotTempF) && (windK > (float)hotWindKph);
   weatherScale = cool ? coolDayPct : (hot ? hotDayPct : 100);
   lastWeatherFetch = now;
   { if (prefsMux) xSemaphoreTake(prefsMux, portMAX_DELAY);
@@ -1054,6 +1061,8 @@ body.color .wcond-row input{background:#171717;border-color:#606060;color:#e5e5e
       <div class="wcond-row"><label>Temp below</label><input type="number" id="wcond-ctf" min="30" max="90" value="65"><span>&#176;F</span></div>
       <div class="wcond-row"><label>Cloud cover above</label><input type="number" id="wcond-ccp" min="10" max="100" value="80"><span>%</span></div>
       <div class="wcond-row"><label>Precipitation above</label><input type="number" id="wcond-cpx" min="0" max="9.9" step="0.1" value="2.5"><span>mm</span></div>
+      <div class="wcond-row"><label>Override above</label><input type="number" id="wcond-hof" min="50" max="120" value="85"><span>&#176;F</span></div>
+      <div class="wcond-note">At/above the override temp, cloud &amp; low-temp are ignored — but real rain still counts.</div>
     </div>
     <hr class="wcond-sep">
     <div class="wcond-section">
@@ -1095,7 +1104,7 @@ body.color .wcond-row input{background:#171717;border-color:#606060;color:#e5e5e
 <script>
 let programs=[],zones=[],activeZone=-1,queued=[],tzSec=0,editing=new Set(),expanded=new Set();
 let flowConfig={pin:16,ppg:0,alarm:0,threshPct:75,zfBase:[],zfCnt:[]};
-let weatherConds={hotTempF:90,hotWindKph:24,coolTempF:65,coolCloudPct:80,coolPrecipX10:25};
+let weatherConds={hotTempF:90,hotWindKph:24,hotOverrideF:85,coolTempF:65,coolCloudPct:80,coolPrecipX10:25};
 let fcalRunning=false;
 let flowAlarmDismissed=false;
 const DAYS=['S','M','T','W','T','F','S'];
@@ -1117,7 +1126,7 @@ async function fetchConfig(){
     initClock(d.epoch);
     if(d.uptime!=null) document.getElementById('uptime').textContent='Uptime: '+fmtUptime(d.uptime);
     renderWeather(d.weatherScale??100, d.coolDayPct??50, d.hotDayPct??150, d.lastWeatherFetch??0,
-      {hotTempF:d.hotTempF??90,hotWindKph:d.hotWindKph??24,coolTempF:d.coolTempF??65,coolCloudPct:d.coolCloudPct??80,coolPrecipX10:d.coolPrecipX10??25});
+      {hotTempF:d.hotTempF??90,hotWindKph:d.hotWindKph??24,hotOverrideF:d.hotOverrideF??85,coolTempF:d.coolTempF??65,coolCloudPct:d.coolCloudPct??80,coolPrecipX10:d.coolPrecipX10??25});
     flowConfig={pin:d.flowPin??16, ppg:d.flowPPG??0, alarm:d.flowAlarm??0,
                 threshPct:d.flowThreshPct??75, zfBase:d.zfBase||[], zfCnt:d.zfCnt||[]};
     updateFlowRow(d.flowGalToday??0, d.flowGalWeek??0);
@@ -1175,6 +1184,7 @@ function openWeatherConds(){
   document.getElementById('wcond-ctf').value=weatherConds.coolTempF;
   document.getElementById('wcond-ccp').value=weatherConds.coolCloudPct;
   document.getElementById('wcond-cpx').value=(weatherConds.coolPrecipX10/10).toFixed(1);
+  document.getElementById('wcond-hof').value=weatherConds.hotOverrideF;
   document.getElementById('wcond-htf').value=weatherConds.hotTempF;
   document.getElementById('wcond-hwk').value=weatherConds.hotWindKph;
   document.getElementById('wcond-ov').style.display='flex';
@@ -1184,16 +1194,17 @@ async function saveWeatherConds(){
   const ctf=parseInt(document.getElementById('wcond-ctf').value);
   const ccp=parseInt(document.getElementById('wcond-ccp').value);
   const cpxF=parseFloat(document.getElementById('wcond-cpx').value);
+  const hof=parseInt(document.getElementById('wcond-hof').value);
   const htf=parseInt(document.getElementById('wcond-htf').value);
   const hwk=parseInt(document.getElementById('wcond-hwk').value);
-  if([ctf,ccp,htf,hwk].some(isNaN)||isNaN(cpxF))return;
-  if(ctf<30||ctf>90||ccp<10||ccp>100||cpxF<0||cpxF>9.9||htf<50||htf>120||hwk<0||hwk>80)return;
+  if([ctf,ccp,hof,htf,hwk].some(isNaN)||isNaN(cpxF))return;
+  if(ctf<30||ctf>90||ccp<10||ccp>100||cpxF<0||cpxF>9.9||hof<50||hof>120||htf<50||htf>120||hwk<0||hwk>80)return;
   const cpx=Math.round(cpxF*10);
   const old={...weatherConds};
-  const changed=ctf!==old.coolTempF||ccp!==old.coolCloudPct||cpx!==old.coolPrecipX10||htf!==old.hotTempF||hwk!==old.hotWindKph;
-  if(changed) pushCL({type:'weatherCond',old,val:{coolTempF:ctf,coolCloudPct:ccp,coolPrecipX10:cpx,hotTempF:htf,hotWindKph:hwk}});
-  weatherConds={coolTempF:ctf,coolCloudPct:ccp,coolPrecipX10:cpx,hotTempF:htf,hotWindKph:hwk};
-  await fetch('/setweatherconds?htf='+htf+'&hwk='+hwk+'&ctf='+ctf+'&ccp='+ccp+'&cpx='+cpx);
+  const changed=ctf!==old.coolTempF||ccp!==old.coolCloudPct||cpx!==old.coolPrecipX10||hof!==old.hotOverrideF||htf!==old.hotTempF||hwk!==old.hotWindKph;
+  if(changed) pushCL({type:'weatherCond',old,val:{coolTempF:ctf,coolCloudPct:ccp,coolPrecipX10:cpx,hotOverrideF:hof,hotTempF:htf,hotWindKph:hwk}});
+  weatherConds={coolTempF:ctf,coolCloudPct:ccp,coolPrecipX10:cpx,hotOverrideF:hof,hotTempF:htf,hotWindKph:hwk};
+  await fetch('/setweatherconds?htf='+htf+'&hwk='+hwk+'&hof='+hof+'&ctf='+ctf+'&ccp='+ccp+'&cpx='+cpx);
   closeWeatherConds();
 }
 
@@ -2005,7 +2016,7 @@ static String buildConfigJson() {
     }
     j += "]}";
   }
-  j += "],\"weatherScale\":" + String(weatherScale) + ",\"coolDayPct\":" + String(coolDayPct) + ",\"hotDayPct\":" + String(hotDayPct) + ",\"lastWeatherFetch\":" + String((long)lastWeatherFetch) + ",\"hotTempF\":" + String(hotTempF) + ",\"hotWindKph\":" + String(hotWindKph) + ",\"coolTempF\":" + String(coolTempF) + ",\"coolCloudPct\":" + String(coolCloudPct) + ",\"coolPrecipX10\":" + String(coolPrecipX10);
+  j += "],\"weatherScale\":" + String(weatherScale) + ",\"coolDayPct\":" + String(coolDayPct) + ",\"hotDayPct\":" + String(hotDayPct) + ",\"lastWeatherFetch\":" + String((long)lastWeatherFetch) + ",\"hotTempF\":" + String(hotTempF) + ",\"hotWindKph\":" + String(hotWindKph) + ",\"hotOverrideF\":" + String(hotOverrideF) + ",\"coolTempF\":" + String(coolTempF) + ",\"coolCloudPct\":" + String(coolCloudPct) + ",\"coolPrecipX10\":" + String(coolPrecipX10);
   // flow stats
   float galToday = 0, galWeek = 0;
   if (flowPulsesPerGallon > 0) {
@@ -2125,6 +2136,7 @@ void setup() {
   server.on("/setweatherconds", HTTP_GET, [](AsyncWebServerRequest* req){
     if (req->hasParam("htf"))  hotTempF      = (uint8_t)constrain(req->getParam("htf")->value().toInt(),  50, 120);
     if (req->hasParam("hwk"))  hotWindKph    = (uint8_t)constrain(req->getParam("hwk")->value().toInt(),   0,  80);
+    if (req->hasParam("hof"))  hotOverrideF  = (uint8_t)constrain(req->getParam("hof")->value().toInt(),  50, 120);
     if (req->hasParam("ctf"))  coolTempF     = (uint8_t)constrain(req->getParam("ctf")->value().toInt(),  30,  90);
     if (req->hasParam("ccp"))  coolCloudPct  = (uint8_t)constrain(req->getParam("ccp")->value().toInt(),  10, 100);
     if (req->hasParam("cpx"))  coolPrecipX10 = (uint8_t)constrain(req->getParam("cpx")->value().toInt(),   0,  99);

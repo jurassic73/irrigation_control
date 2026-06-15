@@ -60,7 +60,8 @@
       "PowerShell(C:\\\\Users\\\\admin\\\\.platformio\\\\penv\\\\Scripts\\\\platformio.exe run -e esp32 2>&1)",
       "Bash(ls platformio.ini && which pio 2>/dev/null || ls ~/.platformio/penv/bin/pio 2>/dev/null || echo \"pio not on PATH\")",
       "Read(//Users/hanssr/.platformio/penv/bin/**)",
-      "Bash(~/.platformio/penv/bin/pio run *)"
+      "Bash(~/.platformio/penv/bin/pio run *)",
+      "Bash(~/.platformio/penv/bin/pip install *)"
     ]
   }
 }
