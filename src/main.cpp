@@ -57,6 +57,8 @@ static portMUX_TYPE stateMux = portMUX_INITIALIZER_UNLOCKED;
 static portMUX_TYPE flowMux  = portMUX_INITIALIZER_UNLOCKED;
 
 #define HISTORY_MAX 200
+// trigger byte: low 7 bits = trigger id (0=manual, 1+=program), bit 7 = low-flow detected this run
+#define HIST_LOWFLOW 0x80
 struct HistoryEntry { time_t start; uint16_t duration; uint8_t zone; uint8_t trigger; uint16_t gallonsX10; };
 HistoryEntry history[HISTORY_MAX];
 int histHead = 0, histCount = 0;
@@ -100,6 +102,7 @@ uint16_t zoneFlowBaseline[NUM_ZONES]    = {};  // gal/min * 100; 0 = still learn
 uint8_t  zoneBaselineCount[NUM_ZONES]   = {};  // valid runs accumulated so far
 uint32_t zoneBaselineSum[NUM_ZONES]     = {};  // sum of rateX100 during learning
 uint8_t  zoneFlowAlarmBits              = 0;   // bitmask: bit i = zone i has low-flow alarm
+uint8_t  zoneFlowAlarmDismissed         = 0;   // bitmask: bit i = alarm dismissed for this instance
 uint8_t  flowAlarmThreshPct             = 75;  // alarm when flow < this % of baseline
 
 #define WEATHER_LOG_MAX 7
@@ -258,15 +261,16 @@ void saveConfig();  // forward declaration — defined after loadConfig
 
 // Evaluate a completed zone run against its flow baseline.
 // rateX100 = gal/min * 100.  Skips short/zero-flow runs during learning phase.
-void checkFlowRate(uint8_t zone, uint16_t gallonsX10, uint16_t durSecs) {
-  if (zone >= NUM_ZONES || flowPulsesPerGallon == 0) return;
-  if (durSecs < 30) return;                         // too short to be meaningful
+// Returns true if this run came in below the low-flow threshold.
+bool checkFlowRate(uint8_t zone, uint16_t gallonsX10, uint16_t durSecs) {
+  if (zone >= NUM_ZONES || flowPulsesPerGallon == 0) return false;
+  if (durSecs < 30) return false;                   // too short to be meaningful
   uint32_t rateX100 = gallonsX10 > 0
     ? (uint32_t)gallonsX10 * 600UL / durSecs : 0;  // gal/min * 100
 
   if (zoneFlowBaseline[zone] == 0) {
     // still in learning phase — only accumulate positive readings
-    if (rateX100 == 0) return;
+    if (rateX100 == 0) return false;
     zoneBaselineSum[zone] += rateX100;
     zoneBaselineCount[zone]++;
     if (zoneBaselineCount[zone] >= FLOW_BASELINE_RUNS) {
@@ -275,26 +279,30 @@ void checkFlowRate(uint8_t zone, uint16_t gallonsX10, uint16_t durSecs) {
         zone, zoneFlowBaseline[zone] / 100.0f, FLOW_BASELINE_RUNS);
       saveConfig();   // persist completed baseline
     }
-    return;
+    return false;
   }
 
   // baseline established — check against threshold
   uint32_t threshold = (uint32_t)zoneFlowBaseline[zone] * flowAlarmThreshPct / 100;
   bool wasAlarm = (zoneFlowAlarmBits >> zone) & 1;
-  if (rateX100 < threshold) {
+  bool isLow    = rateX100 < threshold;
+  if (isLow) {
     if (!wasAlarm) {
-      zoneFlowAlarmBits |= (1 << zone);
+      zoneFlowAlarmBits      |= (1 << zone);
+      zoneFlowAlarmDismissed &= ~(1 << zone);   // fresh instance — show banner again
       saveConfig();
       Serial.printf("Zone %d LOW FLOW: %.2f gal/min (baseline %.2f, threshold %d%%)\n",
         zone, rateX100 / 100.0f, zoneFlowBaseline[zone] / 100.0f, flowAlarmThreshPct);
     }
   } else {
     if (wasAlarm) {
-      zoneFlowAlarmBits &= ~(1 << zone);
+      zoneFlowAlarmBits      &= ~(1 << zone);
+      zoneFlowAlarmDismissed &= ~(1 << zone);
       saveConfig();
       Serial.printf("Zone %d flow alarm cleared: %.2f gal/min\n", zone, rateX100 / 100.0f);
     }
   }
+  return isLow;
 }
 
 void IRAM_ATTR flowPulseISR() {
@@ -363,8 +371,9 @@ void stopActive(int requireZone = -1) {
   uint32_t pulsesUsed = readFlowPulses() - startPulses;
   uint16_t gallonsX10 = flowPulsesPerGallon > 0
     ? (uint16_t)min((uint32_t)65535U, pulsesUsed * 10U / flowPulsesPerGallon) : 0;
+  bool lowFlow = checkFlowRate((uint8_t)zone, gallonsX10, dur);
+  if (lowFlow) trig |= HIST_LOWFLOW;
   addHistory({start, dur, (uint8_t)zone, trig, gallonsX10});
-  checkFlowRate((uint8_t)zone, gallonsX10, dur);
   setRelay(zone, false);
   Serial.printf("Zone %d (%s) done after %us\n", zone, relayNames[zone], dur);
 }
@@ -411,6 +420,7 @@ void loadConfig() {
   flowPin             = prefs.getUChar("flowPin", 16);
   flowPulsesPerGallon = prefs.getULong("flowPPG",  0);
   zoneFlowAlarmBits   = prefs.getUChar("zfAlarm",  0);
+  zoneFlowAlarmDismissed = prefs.getUChar("zfDism", 0);
   flowAlarmThreshPct  = prefs.getUChar("zfPct",   75);
   for (int i = 0; i < NUM_ZONES; i++) {
     char k[10];
@@ -462,6 +472,7 @@ void saveConfig() {
   prefs.putUChar("flowPin",  flowPin);
   prefs.putULong("flowPPG",  flowPulsesPerGallon);
   prefs.putUChar("zfAlarm",  zoneFlowAlarmBits);
+  prefs.putUChar("zfDism",   zoneFlowAlarmDismissed);
   prefs.putUChar("zfPct",    flowAlarmThreshPct);
   for (int i = 0; i < NUM_ZONES; i++) {
     char k[10];
@@ -1106,7 +1117,6 @@ let programs=[],zones=[],activeZone=-1,queued=[],tzSec=0,editing=new Set(),expan
 let flowConfig={pin:16,ppg:0,alarm:0,threshPct:75,zfBase:[],zfCnt:[]};
 let weatherConds={hotTempF:90,hotWindKph:24,hotOverrideF:85,coolTempF:65,coolCloudPct:80,coolPrecipX10:25};
 let fcalRunning=false;
-let flowAlarmDismissed=false;
 const DAYS=['S','M','T','W','T','F','S'];
 
 function fmtUptime(s){
@@ -1128,6 +1138,7 @@ async function fetchConfig(){
     renderWeather(d.weatherScale??100, d.coolDayPct??50, d.hotDayPct??150, d.lastWeatherFetch??0,
       {hotTempF:d.hotTempF??90,hotWindKph:d.hotWindKph??24,hotOverrideF:d.hotOverrideF??85,coolTempF:d.coolTempF??65,coolCloudPct:d.coolCloudPct??80,coolPrecipX10:d.coolPrecipX10??25});
     flowConfig={pin:d.flowPin??16, ppg:d.flowPPG??0, alarm:d.flowAlarm??0,
+                dismissed:d.flowAlarmDismissed??0,
                 threshPct:d.flowThreshPct??75, zfBase:d.zfBase||[], zfCnt:d.zfCnt||[]};
     updateFlowRow(d.flowGalToday??0, d.flowGalWeek??0);
     updateAlarmBanner();
@@ -1491,8 +1502,9 @@ async function openLog(){
         ?'<span style="font-size:.65rem;background:#1e40af;color:#93c5fd;border-radius:.25rem;padding:.05rem .3rem;margin-left:.3rem">Manual</span>'
         :'<span style="font-size:.65rem;background:#1e293b;color:#94a3b8;border-radius:.25rem;padding:.05rem .3rem;margin-left:.3rem">'+esc(trig)+'</span>';
       const galSpan=(e.gallonsX10>0)?'<span style="font-size:.68rem;color:#38bdf8;min-width:34px;text-align:right">'+(e.gallonsX10/10).toFixed(1)+'g</span>':'';
+      const lowPill=e.lowFlow?'<span style="font-size:.6rem;background:#7f1d1d;color:#fca5a5;border-radius:.25rem;padding:.05rem .3rem;margin-left:.3rem" title="Low flow detected on this run">&#9888; Low flow</span>':'';
       html+='<div class="log-entry">'+
-        '<span class="log-zone">'+esc(e.name)+badge+'</span>'+
+        '<span class="log-zone">'+esc(e.name)+badge+lowPill+'</span>'+
         galSpan+
         '<span class="log-dur">'+fmtDur(e.durationSecs)+'</span>'+
         '<span class="log-time">'+fmtTime(e.start)+'</span>'+
@@ -1807,21 +1819,23 @@ async function resetFlowBaseline(){
   document.getElementById('fcal-status').textContent='Baseline reset. Will re-learn from next 3 runs.';
 }
 function updateAlarmBanner(){
-  const bits=flowConfig.alarm||0;
-  if(bits===0||flowAlarmDismissed){
+  // Show only zones that are alarming AND not dismissed server-side for this instance.
+  const active=(flowConfig.alarm||0)&~(flowConfig.dismissed||0);
+  if(active===0){
     document.getElementById('flow-alarm-banner').style.display='none';
     return;
   }
   const names=[];
-  zones.forEach((z,i)=>{ if((bits>>i)&1) names.push(z.name||('Zone '+(i+1))); });
+  zones.forEach((z,i)=>{ if((active>>i)&1) names.push(z.name||('Zone '+(i+1))); });
   document.getElementById('flow-alarm-txt').innerHTML=
     '<b>Low flow detected: '+names.map(n=>'<span style="color:#fcd34d">'+esc(n)+'</span>').join(', ')+'</b>'+
     '<br>Possible upstream pressure issue (regulator?) or clogged emitters. Check run logs.';
   document.getElementById('flow-alarm-banner').style.display='flex';
 }
-function dismissFlowAlarm(){
-  flowAlarmDismissed=true;
+async function dismissFlowAlarm(){
   document.getElementById('flow-alarm-banner').style.display='none';
+  flowConfig.dismissed=(flowConfig.dismissed||0)|(flowConfig.alarm||0);
+  try{await fetch('/dismissflowalarm');}catch(e){console.error('dismissFlowAlarm:',e);}
 }
 
 function setTheme(t){
@@ -2029,10 +2043,10 @@ static String buildConfigJson() {
       if (e.start >= todayStart) galToday += e.gallonsX10 / 10.0f;
     }
   }
-  char fbuf[160];
+  char fbuf[200];
   snprintf(fbuf, sizeof(fbuf),
-    ",\"flowPin\":%u,\"flowPPG\":%lu,\"flowAlarm\":%u,\"flowThreshPct\":%u,\"flowGalToday\":%.1f,\"flowGalWeek\":%.1f",
-    flowPin, (unsigned long)flowPulsesPerGallon, zoneFlowAlarmBits, flowAlarmThreshPct, galToday, galWeek);
+    ",\"flowPin\":%u,\"flowPPG\":%lu,\"flowAlarm\":%u,\"flowAlarmDismissed\":%u,\"flowThreshPct\":%u,\"flowGalToday\":%.1f,\"flowGalWeek\":%.1f",
+    flowPin, (unsigned long)flowPulsesPerGallon, zoneFlowAlarmBits, zoneFlowAlarmDismissed, flowAlarmThreshPct, galToday, galWeek);
   j += fbuf;
   j += ",\"zfBase\":[";
   for (int i = 0; i < NUM_ZONES; i++) { if (i) j += ","; j += String(zoneFlowBaseline[i]); }
@@ -2271,10 +2285,12 @@ void setup() {
     for (int i = histCount - 1; i >= 0; i--) {
       if (i < histCount - 1) j += ",";
       HistoryEntry& e = history[(histHead + i) % HISTORY_MAX];
-      const char* trig = e.trigger <= NUM_PROGRAMS ? trigNames[e.trigger] : "Unknown";
+      uint8_t trigId = e.trigger & ~HIST_LOWFLOW;
+      const char* trig = trigId <= NUM_PROGRAMS ? trigNames[trigId] : "Unknown";
       j += "{\"zone\":" + String(e.zone) +
            ",\"name\":\"" + jsonEsc(relayNames[e.zone]) + "\"" +
            ",\"trigger\":\"" + String(trig) + "\"" +
+           ",\"lowFlow\":" + String((e.trigger & HIST_LOWFLOW) ? 1 : 0) +
            ",\"start\":" + String((long)e.start) +
            ",\"durationSecs\":" + String(e.duration) +
            ",\"gallonsX10\":" + String(e.gallonsX10) + "}";
@@ -2382,6 +2398,14 @@ void setup() {
     req->send(200, "text/plain", "ok");
   });
 
+  server.on("/dismissflowalarm", HTTP_GET, [](AsyncWebServerRequest* req){
+    // Dismiss the currently-active low-flow alarm(s) so the banner stays hidden
+    // across refreshes. A fresh low-flow instance re-clears these bits in checkFlowRate.
+    zoneFlowAlarmDismissed |= zoneFlowAlarmBits;
+    saveConfig();
+    req->send(200, "text/plain", "ok");
+  });
+
   server.on("/resetflowbaseline", HTTP_GET, [](AsyncWebServerRequest* req){
     if (!req->hasParam("zone")) { req->send(400, "text/plain", "missing zone"); return; }
     int z = req->getParam("zone")->value().toInt();
@@ -2389,7 +2413,8 @@ void setup() {
     zoneFlowBaseline[z] = 0;
     zoneBaselineCount[z] = 0;
     zoneBaselineSum[z]   = 0;
-    zoneFlowAlarmBits &= ~(1 << z);   // clear alarm for this zone too
+    zoneFlowAlarmBits      &= ~(1 << z);   // clear alarm for this zone too
+    zoneFlowAlarmDismissed &= ~(1 << z);
     saveConfig();
     Serial.printf("Zone %d flow baseline reset\n", z);
     req->send(200, "text/plain", "ok");
