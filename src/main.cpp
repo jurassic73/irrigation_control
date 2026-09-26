@@ -12,7 +12,7 @@
 #include "secrets.h"
 #include "location.h"
 
-#define FW_VERSION        "1.2.0"
+#define FW_VERSION        "1.2.1"
 
 #define LED_PIN      48
 #define LED_COUNT     1
@@ -434,7 +434,9 @@ void stopActive(int requireZone = -1) {
     return;
   }
   time_t now; time(&now);
-  uint16_t dur        = (uint16_t)min((long)(now - activeStartTime), 65535L);
+  long     elapsed    = (long)(now - activeStartTime);
+  if (elapsed < 0) elapsed = 0;          // clock stepped backwards mid-run
+  uint16_t dur        = (uint16_t)(elapsed > 65535L ? 65535L : elapsed);
   int8_t   zone       = activeZone;
   uint8_t  trig       = activeTrigger;
   time_t   start      = activeStartTime;
@@ -2287,8 +2289,12 @@ void setup() {
 
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   Serial.print("Connecting to WiFi");
-  while (WiFi.status() != WL_CONNECTED) { delay(500); Serial.print("."); }
-  Serial.println("\nConnected! IP: " + WiFi.localIP().toString());
+  for (int t = 0; t < 120 && WiFi.status() != WL_CONNECTED; t++) { delay(500); Serial.print("."); }
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\nConnected! IP: " + WiFi.localIP().toString());
+  } else {
+    Serial.println("\nWiFi not up after 60s — continuing to boot; loop() retries every 30s");
+  }
 
   configTime(0, 0, "pool.ntp.org", "time.nist.gov");
   setenv("TZ", TZ_PACIFIC, 1); tzset();
@@ -2646,6 +2652,12 @@ void setup() {
   DefaultHeaders::Instance().addHeader("Access-Control-Allow-Origin", "*");
   server.begin();
   xTaskCreatePinnedToCore(weatherTaskFn, "weather", 16384, NULL, 1, &weatherTaskHandle, 1);
+
+  // Last: if loop() ever wedges, the watchdog reboots us and every relay comes back
+  // off. Without it a stuck loop leaves a valve open indefinitely. loop() returns
+  // roughly every 50 ms, so the default timeout has an enormous margin.
+  enableLoopWDT();
+  Serial.println("Setup complete — loop watchdog armed");
 }
 
 void loop() {

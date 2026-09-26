@@ -341,6 +341,22 @@ needs no request body.
 ]
 ```
 
+## Failure Behaviour
+
+An irrigation controller fails badly if it leaves a valve open, so the firmware is
+arranged to end up with the water off:
+
+- **Hung firmware** — `loopTask` is subscribed to the ESP32 task watchdog (5 s, panic
+  mode). If the main loop ever wedges, the chip reboots, and `setup()` drives every
+  relay off before it touches anything else.
+- **Power loss** — the solenoids are normally-closed, so no power means no water.
+- **Router down at boot** — the boot-time WiFi wait is bounded at 60 s. The controller
+  finishes booting without a network and `loop()` retries every 30 s, so a power cut
+  that takes the router down alongside the controller recovers on its own.
+- **NTP unavailable** — schedules pause rather than firing at the wrong time, and
+  resume automatically once the clock syncs, however late that is.
+- **Run length** — capped at `MAX_RELAY_SECS` (8 h) after weather scaling, not before.
+
 ## Scheduling
 
 A single water pressure source means one relay runs at a time. The scheduler uses a FIFO queue:
