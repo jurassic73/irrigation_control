@@ -111,7 +111,30 @@ WeatherLogEntry wLog[WEATHER_LOG_MAX];
 int wLogCount = 0, wLogHead = 0;
 
 String clJson = "[]";
+SemaphoreHandle_t clMux = nullptr;  // guards clJson between HTTP callbacks and the deferred write
 bool timeValid = false;  // set true only after a successful NTP sync
+
+// ── Deferred persistence ──────────────────────────────────────────────────────
+// ESPAsyncWebServer callbacks run on the AsyncTCP task, which must not block: a
+// saveConfig() there is ~60 NVS keys and a saveHistoryLog() is a 2.4 KB LittleFS
+// write, both stalling every other connection. Handlers set a dirty bit instead and
+// loop() does the actual write on its next pass (flushDirty).
+
+#define DIRTY_CONFIG   0x01
+#define DIRTY_PURGE    0x02   // trim history to the retention window (runs before the write)
+#define DIRTY_HISTORY  0x04
+#define DIRTY_TEMP     0x08
+#define DIRTY_WLOG     0x10
+#define DIRTY_CLOG     0x20
+
+static uint8_t dirtyFlags = 0;
+static portMUX_TYPE dirtyMux = portMUX_INITIALIZER_UNLOCKED;
+
+static void markDirty(uint8_t bits) {
+  portENTER_CRITICAL(&dirtyMux);
+  dirtyFlags |= bits;
+  portEXIT_CRITICAL(&dirtyMux);
+}
 
 // ── Log persistence (LittleFS) ────────────────────────────────────────────────
 
@@ -146,10 +169,12 @@ void saveWeatherLog() {
 }
 
 void saveChangeLog() {
+  // clJson is mutated by /pushcl on the AsyncTCP task while this runs on loop()'s.
+  if (clMux) xSemaphoreTake(clMux, portMAX_DELAY);
   File f = LittleFS.open("/clog.json", "w");
-  if (!f) { Serial.println("saveChangeLog: open failed"); return; }
-  f.print(clJson);
-  f.close();
+  if (f) { f.print(clJson); f.close(); }
+  else Serial.println("saveChangeLog: open failed");
+  if (clMux) xSemaphoreGive(clMux);
 }
 
 void loadLogs() {
@@ -207,7 +232,7 @@ void pushWeatherLog(time_t t, float maxF, float precip, float cloud, float wind,
   wLog[idx] = {t, maxF, precip, cloud, wind, scale, ok, errCode, manual};
   if (wLogCount < WEATHER_LOG_MAX) wLogCount++;
   else wLogHead = (wLogHead + 1) % WEATHER_LOG_MAX;
-  saveWeatherLog();
+  markDirty(DIRTY_WLOG);
 }
 
 Preferences       prefs;
@@ -221,7 +246,7 @@ void addTempSample(time_t t, float c) {
   tempHist[idx] = {t, c};
   if (tempHistCount < TEMP_HIST_MAX) tempHistCount++;
   else tempHistHead = (tempHistHead + 1) % TEMP_HIST_MAX;
-  saveTempHistory();
+  markDirty(DIRTY_TEMP);
 }
 
 // ── Queue ─────────────────────────────────────────────────────────────────────
@@ -293,7 +318,7 @@ bool checkFlowRate(uint8_t zone, uint16_t gallonsX10, uint16_t durSecs) {
       zoneFlowBaseline[zone] = (uint16_t)(zoneBaselineSum[zone] / FLOW_BASELINE_RUNS);
       Serial.printf("Zone %d flow baseline: %.2f gal/min (%d runs)\n",
         zone, zoneFlowBaseline[zone] / 100.0f, FLOW_BASELINE_RUNS);
-      saveConfig();   // persist completed baseline
+      markDirty(DIRTY_CONFIG);   // persist completed baseline
     }
     return false;
   }
@@ -306,7 +331,7 @@ bool checkFlowRate(uint8_t zone, uint16_t gallonsX10, uint16_t durSecs) {
     if (!wasAlarm) {
       zoneFlowAlarmBits      |= (1 << zone);
       zoneFlowAlarmDismissed &= ~(1 << zone);   // fresh instance — show banner again
-      saveConfig();
+      markDirty(DIRTY_CONFIG);
       Serial.printf("Zone %d LOW FLOW: %.2f gal/min (baseline %.2f, threshold %d%%)\n",
         zone, rateX100 / 100.0f, zoneFlowBaseline[zone] / 100.0f, flowAlarmThreshPct);
     }
@@ -314,7 +339,7 @@ bool checkFlowRate(uint8_t zone, uint16_t gallonsX10, uint16_t durSecs) {
     if (wasAlarm) {
       zoneFlowAlarmBits      &= ~(1 << zone);
       zoneFlowAlarmDismissed &= ~(1 << zone);
-      saveConfig();
+      markDirty(DIRTY_CONFIG);
       Serial.printf("Zone %d flow alarm cleared: %.2f gal/min\n", zone, rateX100 / 100.0f);
     }
   }
@@ -358,7 +383,6 @@ void purgeHistory() {
 }
 
 void addHistory(HistoryEntry e) {
-  purgeHistory();
   if (histCount >= HISTORY_MAX) {
     history[histHead] = e;
     histHead = (histHead + 1) % HISTORY_MAX;
@@ -366,7 +390,7 @@ void addHistory(HistoryEntry e) {
     history[(histHead + histCount) % HISTORY_MAX] = e;
     histCount++;
   }
-  saveHistoryLog();
+  markDirty(DIRTY_PURGE | DIRTY_HISTORY);
 }
 
 // requireZone >= 0 stops only if that zone is currently active; -1 stops whatever is active.
@@ -501,6 +525,22 @@ void saveConfig() {
   prefs.putUChar("cfgVer", 2);
   prefs.end();
   if (prefsMux) xSemaphoreGive(prefsMux);
+}
+
+// Perform the writes that HTTP handlers deferred. Runs on loop()'s task only.
+// Flags are claimed under the spinlock so a handler firing mid-flush re-arms its bit
+// rather than having the write silently dropped.
+static void flushDirty() {
+  portENTER_CRITICAL(&dirtyMux);
+  uint8_t f = dirtyFlags; dirtyFlags = 0;
+  portEXIT_CRITICAL(&dirtyMux);
+  if (!f) return;
+  if (f & DIRTY_CONFIG)  saveConfig();
+  if (f & DIRTY_PURGE)   purgeHistory();   // must precede the history write
+  if (f & DIRTY_HISTORY) saveHistoryLog();
+  if (f & DIRTY_TEMP)    saveTempHistory();
+  if (f & DIRTY_WLOG)    saveWeatherLog();
+  if (f & DIRTY_CLOG)    saveChangeLog();
 }
 
 // ── Weather ───────────────────────────────────────────────────────────────────
@@ -1171,7 +1211,7 @@ body.color .wcond-row input{background:#171717;border-color:#606060;color:#e5e5e
   </div>
 </div>
 <script>
-let programs=[],zones=[],activeZone=-1,queued=[],tzSec=0,editing=new Set(),expanded=new Set();
+let programs=[],zones=[],activeZone=-1,activeEnd=0,queued=[],tzSec=0,editing=new Set(),expanded=new Set();
 let flowConfig={pin:16,ppg:0,alarm:0,threshPct:75,zfBase:[],zfCnt:[]};
 let weatherConds={hotTempF:90,hotWindKph:24,hotOverrideF:85,coolTempF:65,coolCloudPct:80,coolPrecipX10:25};
 let fcalRunning=false;
@@ -1190,9 +1230,10 @@ async function fetchConfig(){
     if(window.__IC){d=window.__IC;delete window.__IC;}
     else d=await(await fetch('/config')).json();
     tzSec=d.tzSec; programs=d.programs; zones=d.zones;
-    activeZone=d.activeZone; queued=d.queued||[];
+    activeZone=d.activeZone; activeEnd=d.activeEnd||0; queued=d.queued||[];
     initClock(d.epoch);
     if(d.uptime!=null) document.getElementById('uptime').textContent='Uptime: '+fmtUptime(d.uptime);
+    if(d.chipF!=null) document.getElementById('chip-temp').textContent='🌡 ESP32: '+d.chipF.toFixed(1)+'°F';
     renderWeather(d.weatherScale??100, d.coolDayPct??50, d.hotDayPct??150, d.lastWeatherFetch??0,
       {hotTempF:d.hotTempF??90,hotWindKph:d.hotWindKph??24,hotOverrideF:d.hotOverrideF??85,coolTempF:d.coolTempF??65,coolCloudPct:d.coolCloudPct??80,coolPrecipX10:d.coolPrecipX10??25});
     flowConfig={pin:d.flowPin??16, ppg:d.flowPPG??0, alarm:d.flowAlarm??0,
@@ -1279,10 +1320,19 @@ async function saveWeatherConds(){
 
 let clockBase=0,clockSync=0;
 function initClock(e){clockBase=e;clockSync=Date.now();}
+function nowEpoch(){return clockBase?clockBase+Math.floor((Date.now()-clockSync)/1000):0;}
 function tickClock(){
   if(!clockBase)return;
-  const utc=clockBase+Math.floor((Date.now()-clockSync)/1000);
-  document.getElementById('clock').textContent='Local: '+fmtTime(utc);
+  document.getElementById('clock').textContent='Local: '+fmtTime(nowEpoch());
+  tickRemaining();
+}
+// Counts down between the 15s config polls using the already-synced clock offset.
+function tickRemaining(){
+  const el=document.getElementById('z-remain');
+  if(!el)return;
+  if(!activeEnd||!clockBase){el.textContent='';return;}
+  const r=Math.max(0,activeEnd-nowEpoch());
+  el.textContent=' '+Math.floor(r/60)+':'+pad(r%60);
 }
 setInterval(tickClock,1000);
 
@@ -1351,7 +1401,7 @@ function renderZones(){
     c.innerHTML=
       '<div class="ztop">'+
         '<span class="zname">'+esc(z.name)+'</span>'+
-        (st!=='off'?'<span class="zbadge '+st+'">'+bl+'</span>':'')+
+        (st!=='off'?'<span class="zbadge '+st+'">'+bl+(st==='active'?'<span id="z-remain"></span>':'')+'</span>':'')+
         '<button class="rnbtn" '+(busy?'disabled':'')+' onclick="runNow('+i+')">&#9654; Run Now</button>'+
         '<button class="xbtn" onclick="toggleExpand('+i+')">'+(isExp?'▴':'▾')+'</button>'+
       '</div>'+
@@ -1373,6 +1423,7 @@ function renderZones(){
       '</div>';
     el.appendChild(c);
   });
+  tickRemaining();
 }
 
 async function togglePDay(pi,di){
@@ -1457,7 +1508,7 @@ let rnZone=-1, fetchTimer=null;
 function schedFetch(){clearTimeout(fetchTimer);fetchTimer=setTimeout(fetchConfig,600);}
 function runNow(i){
   rnZone=i;
-  document.getElementById('rn-title').textContent='Run '+esc(zones[i].name);
+  document.getElementById('rn-title').textContent='Run '+zones[i].name;
   document.getElementById('rn-custom').style.display='none';
   const sb=document.getElementById('rn-sched-btns');
   const d0=zones[i].durations[0]||0;
@@ -1600,11 +1651,12 @@ async function renderChangeLog(){
   const sortedDays=Object.keys(days).sort((a,b)=>b-a);
   const prN=['Morning','Afternoon'];
   const DN=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-  function fmtT(hm){const[h,m]=hm.split(':').map(Number);const ap=h>=12?'PM':'AM';const h12=h%12||12;return h12+':'+(m<10?'0':'')+m+' '+ap;}
+  function fmtT(hm){const s=String(hm??'');const[h,m]=s.split(':').map(Number);if(isNaN(h)||isNaN(m))return s;const ap=h>=12?'PM':'AM';const h12=h%12||12;return h12+':'+(m<10?'0':'')+m+' '+ap;}
   function clRow(left,mid,right,ts){
-    return '<div class="log-entry">'+left+(mid?'<span style="font-size:.68rem;color:#94a3b8;white-space:nowrap">'+mid+'</span>':'')+
-      '<span class="log-dur" style="color:'+right[0]+'">'+right[1]+'</span>'+
-      '<span class="log-time">'+ts+'</span></div>';
+    // left is pre-escaped by the callers; mid/right carry /pushcl-supplied values.
+    return '<div class="log-entry">'+left+(mid?'<span style="font-size:.68rem;color:#94a3b8;white-space:nowrap">'+esc(mid)+'</span>':'')+
+      '<span class="log-dur" style="color:'+right[0]+'">'+esc(right[1])+'</span>'+
+      '<span class="log-time">'+esc(ts)+'</span></div>';
   }
   let html='';
   sortedDays.forEach((dk,di)=>{
@@ -1686,7 +1738,7 @@ async function downloadLogs(){
     csv+='\r\n=== CHANGE LOG ===\r\nDate,Time,Type,What,Detail\r\n';
     const prNC=['Morning','Afternoon'];
     const DNC=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-    function fmtTC(hm){const[h,m]=hm.split(':').map(Number);const ap=h>=12?'PM':'AM';const h12=h%12||12;return h12+':'+(m<10?'0':'')+m+' '+ap;}
+    function fmtTC(hm){const s=String(hm??'');const[h,m]=s.split(':').map(Number);if(isNaN(h)||isNaN(m))return s;const ap=h>=12?'PM':'AM';const h12=h%12||12;return h12+':'+(m<10?'0':'')+m+' '+ap;}
     [...clog].reverse().forEach(e=>{
       const t=e.type||'duration';
       let what='',detail='';
@@ -1771,7 +1823,7 @@ function fmtZoneFlowStatus(i){
   '</div>';
 }
 async function resetZoneBaseline(zi){
-  if(!confirm('Reset flow baseline for '+esc(zones[zi]?.name||('Zone '+(zi+1)))+'?\nIt will re-learn from the next 3 runs.'))return;
+  if(!confirm('Reset flow baseline for '+(zones[zi]?.name||('Zone '+(zi+1)))+'?\nIt will re-learn from the next 3 runs.'))return;
   await fetch('/resetflowbaseline?zone='+zi);
   await fetchConfig();
 }
@@ -1870,7 +1922,7 @@ async function saveFlowCal(){
 }
 async function resetFlowBaseline(){
   const zi=parseInt(document.getElementById('fcal-zone').value);
-  if(!confirm('Reset flow baseline for '+esc(zones[zi]?.name||('Zone '+(zi+1)))+'? It will re-learn from the next '+3+' runs.'))return;
+  if(!confirm('Reset flow baseline for '+(zones[zi]?.name||('Zone '+(zi+1)))+'? It will re-learn from the next '+3+' runs.'))return;
   await fetch('/resetflowbaseline?zone='+zi);
   await fetchConfig();
   updateBaselineInfo();
@@ -1940,12 +1992,6 @@ function makeDraggable(el,handle){
   });
 })();
 
-async function fetchTemp(){
-  try{
-    const d=await(await fetch('/temp')).json();
-    document.getElementById('chip-temp').textContent='🌡 ESP32: '+d.f.toFixed(1)+'°F';
-  }catch(e){console.error('fetchTemp:',e);}
-}
 
 let tgTimer=null, tgView='day', tgData=[];
 const tgDays=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
@@ -2036,8 +2082,6 @@ function drawTempGraph(pts){
 
 fetchConfig();
 setInterval(fetchConfig,15000);
-fetchTemp();
-setInterval(fetchTemp,30000);
 </script>
 </body>
 </html>
@@ -2059,12 +2103,23 @@ static String buildConfigJson() {
   time_t now; struct tm ti{};
   time(&now); localtime_r(&now, &ti);
   long tzs = ti.tm_isdst > 0 ? (-7L*3600L) : (-8L*3600L);
-  String j; j.reserve(1000);
+  String j; j.reserve(1500);
+  // Snapshot the shared queue/active state under stateMux, then build the JSON
+  // outside it — String concatenation allocates, which must not happen inside a
+  // spinlock. Reading these unguarded could otherwise report a torn queue.
+  uint8_t qz[QUEUE_MAX]; int qn = 0;
+  int8_t  az; time_t endT;
+  portENTER_CRITICAL(&stateMux);
+  az = activeZone; endT = activeEndTime;
+  for (int i = 0; i < qSize; i++) qz[qn++] = qBuf[(qHead + i) % QUEUE_MAX].zone;
+  portEXIT_CRITICAL(&stateMux);
+
   j += "{\"epoch\":" + String((long)now) + ",\"tzSec\":" + String(tzs) + ",\"uptime\":" + String((unsigned long)(millis()/1000)) + ",\"fw\":\"" FW_VERSION "\"";
-  j += ",\"activeZone\":" + String(activeZone) + ",\"queued\":[";
-  for (int i = 0; i < qSize; i++) {
+  j += ",\"chipF\":" + String(toF(temperatureRead()), 1);
+  j += ",\"activeZone\":" + String(az) + ",\"activeEnd\":" + String((long)(az >= 0 ? endT : 0)) + ",\"queued\":[";
+  for (int i = 0; i < qn; i++) {
     if (i) j += ",";
-    j += String(qBuf[(qHead + i) % QUEUE_MAX].zone);
+    j += String(qz[i]);
   }
   j += "],\"programs\":[";
   for (int pr = 0; pr < NUM_PROGRAMS; pr++) {
@@ -2119,6 +2174,7 @@ static String buildConfigJson() {
 void setup() {
   Serial.begin(115200);
   prefsMux = xSemaphoreCreateMutex();
+  clMux   = xSemaphoreCreateMutex();
 
   led.begin();
   led.setBrightness(128);
@@ -2155,7 +2211,7 @@ void setup() {
 
   server.on("/", HTTP_GET, [](AsyncWebServerRequest* req){
     String prefix;
-    prefix.reserve(700);
+    prefix.reserve(1600);
     prefix += "<script>window.__IC=";
     prefix += buildConfigJson();
     prefix += ";</script>";
@@ -2193,7 +2249,7 @@ void setup() {
   server.on("/setcoolpct", HTTP_GET, [](AsyncWebServerRequest* req){
     if (req->hasParam("pct")) {
       coolDayPct = (uint8_t)constrain(req->getParam("pct")->value().toInt(), 10, 90);
-      saveConfig();
+      markDirty(DIRTY_CONFIG);
     }
     req->send(200, "text/plain", "ok");
   });
@@ -2201,7 +2257,7 @@ void setup() {
   server.on("/sethotpct", HTTP_GET, [](AsyncWebServerRequest* req){
     if (req->hasParam("pct")) {
       hotDayPct = (uint8_t)constrain(req->getParam("pct")->value().toInt(), 100, 200);
-      saveConfig();
+      markDirty(DIRTY_CONFIG);
     }
     req->send(200, "text/plain", "ok");
   });
@@ -2213,7 +2269,7 @@ void setup() {
     if (req->hasParam("ctf"))  coolTempF     = (uint8_t)constrain(req->getParam("ctf")->value().toInt(),  30,  90);
     if (req->hasParam("ccp"))  coolCloudPct  = (uint8_t)constrain(req->getParam("ccp")->value().toInt(),  10, 100);
     if (req->hasParam("cpx"))  coolPrecipX10 = (uint8_t)constrain(req->getParam("cpx")->value().toInt(),   0,  99);
-    saveConfig();
+    markDirty(DIRTY_CONFIG);
     req->send(200, "text/plain", "ok");
   });
 
@@ -2266,7 +2322,7 @@ void setup() {
       programs[id].minute = (uint8_t)m;
     }
     if (req->hasParam("days")) programs[id].days = (uint8_t)(req->getParam("days")->value().toInt() & 0x7F);
-    saveConfig();
+    markDirty(DIRTY_CONFIG);
     Serial.printf("Program %d saved\n", id);
     req->send(200,"text/plain","ok");
   });
@@ -2302,7 +2358,7 @@ void setup() {
       snprintf(pname, sizeof(pname), "zd%d", pr);
       if (req->hasParam(pname)) zoneDays[idx][pr] = (uint8_t)constrain(req->getParam(pname)->value().toInt(), 0, 127);
     }
-    saveConfig();
+    markDirty(DIRTY_CONFIG);
     req->send(200,"text/plain","ok");
   });
 
@@ -2335,7 +2391,6 @@ void setup() {
   });
 
   server.on("/history", HTTP_GET, [](AsyncWebServerRequest* req){
-    static const char* trigNames[] = {"Manual", "Morning", "Afternoon"};
     String j; j.reserve(histCount * 100 + 64);
     j = "{\"retainDays\":" + String(historyDays) +
                ",\"count\":" + String(histCount) + ",\"history\":[";
@@ -2343,9 +2398,12 @@ void setup() {
       if (i < histCount - 1) j += ",";
       HistoryEntry& e = history[(histHead + i) % HISTORY_MAX];
       uint8_t trigId = e.trigger & ~HIST_LOWFLOW;
-      const char* trig = trigId <= NUM_PROGRAMS ? trigNames[trigId] : "Unknown";
+      const char* trig = trigId == 0 ? "Manual"
+                       : (trigId <= NUM_PROGRAMS ? PROG_NAMES[trigId - 1] : "Unknown");
+      // e.zone comes off flash; a corrupt entry must not index relayNames out of range.
+      const char* zname = e.zone < NUM_ZONES ? relayNames[e.zone] : "Unknown";
       j += "{\"zone\":" + String(e.zone) +
-           ",\"name\":\"" + jsonEsc(relayNames[e.zone]) + "\"" +
+           ",\"name\":\"" + jsonEsc(zname) + "\"" +
            ",\"trigger\":\"" + String(trig) + "\"" +
            ",\"lowFlow\":" + String((e.trigger & HIST_LOWFLOW) ? 1 : 0) +
            ",\"start\":" + String((long)e.start) +
@@ -2359,21 +2417,23 @@ void setup() {
   server.on("/sethistory", HTTP_GET, [](AsyncWebServerRequest* req){
     if (req->hasParam("days")) {
       historyDays = (uint8_t)constrain(req->getParam("days")->value().toInt(), 1, 90);
-      saveConfig();
-      purgeHistory();
-      saveHistoryLog();
+      markDirty(DIRTY_CONFIG | DIRTY_PURGE | DIRTY_HISTORY);
       Serial.printf("History retain set to %d days\n", historyDays);
     }
     req->send(200, "text/plain", "ok");
   });
 
   server.on("/changelog", HTTP_GET, [](AsyncWebServerRequest* req){
-    req->send(200, "application/json", clJson);
+    if (clMux) xSemaphoreTake(clMux, portMAX_DELAY);
+    String out = clJson;                 // copy under the lock, send outside it
+    if (clMux) xSemaphoreGive(clMux);
+    req->send(200, "application/json", out);
   });
 
   server.on("/pushcl", HTTP_GET, [](AsyncWebServerRequest* req){
     if (!req->hasParam("e")) { req->send(400); return; }
     String entry = req->getParam("e")->value();
+    if (clMux) xSemaphoreTake(clMux, portMAX_DELAY);
     JsonDocument doc;
     if (deserializeJson(doc, clJson) != DeserializationError::Ok || !doc.is<JsonArray>())
       doc.to<JsonArray>();
@@ -2384,13 +2444,16 @@ void setup() {
     while ((int)arr.size() > 50) arr.remove(0);
     clJson = "";
     serializeJson(doc, clJson);
-    saveChangeLog();
+    if (clMux) xSemaphoreGive(clMux);
+    markDirty(DIRTY_CLOG);
     req->send(200, "text/plain", "ok");
   });
 
   server.on("/clearcl", HTTP_GET, [](AsyncWebServerRequest* req){
+    if (clMux) xSemaphoreTake(clMux, portMAX_DELAY);
     clJson = "[]";
-    saveChangeLog();
+    if (clMux) xSemaphoreGive(clMux);
+    markDirty(DIRTY_CLOG);
     req->send(200, "text/plain", "ok");
   });
 
@@ -2443,14 +2506,14 @@ void setup() {
       flowPulsesPerGallon = (uint32_t)constrain((long)req->getParam("ppg")->value().toInt(), 1L, 999999L);
       changed = true;
     }
-    if (changed) saveConfig();
+    if (changed) markDirty(DIRTY_CONFIG);
     req->send(200, "text/plain", "ok");
   });
 
   server.on("/setflowthresh", HTTP_GET, [](AsyncWebServerRequest* req){
     if (req->hasParam("pct")) {
       flowAlarmThreshPct = (uint8_t)constrain(req->getParam("pct")->value().toInt(), 10, 99);
-      saveConfig();
+      markDirty(DIRTY_CONFIG);
     }
     req->send(200, "text/plain", "ok");
   });
@@ -2459,7 +2522,7 @@ void setup() {
     // Dismiss the currently-active low-flow alarm(s) so the banner stays hidden
     // across refreshes. A fresh low-flow instance re-clears these bits in checkFlowRate.
     zoneFlowAlarmDismissed |= zoneFlowAlarmBits;
-    saveConfig();
+    markDirty(DIRTY_CONFIG);
     req->send(200, "text/plain", "ok");
   });
 
@@ -2472,7 +2535,7 @@ void setup() {
     zoneBaselineSum[z]   = 0;
     zoneFlowAlarmBits      &= ~(1 << z);   // clear alarm for this zone too
     zoneFlowAlarmDismissed &= ~(1 << z);
-    saveConfig();
+    markDirty(DIRTY_CONFIG);
     Serial.printf("Zone %d flow baseline reset\n", z);
     req->send(200, "text/plain", "ok");
   });
@@ -2555,4 +2618,10 @@ void loop() {
     time_t now; time(&now);
     addTempSample(now, temperatureRead());
   }
+
+  flushDirty();   // NVS/LittleFS writes deferred by the HTTP handlers
+
+  // Everything above is gated on millis() deltas, so spinning flat out only burned
+  // power and starved the WiFi/lwIP tasks sharing this core.
+  delay(50);
 }
