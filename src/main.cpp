@@ -40,6 +40,10 @@ WateringProgram programs[NUM_PROGRAMS] = {
 time_t progLastFired[NUM_PROGRAMS] = {};
 
 uint16_t zoneDuration[NUM_ZONES][NUM_PROGRAMS] = {};
+// bit i = zone i participates in scheduled runs. Switching a zone off preserves its
+// durations and day masks — the point is parking a zone for the season without
+// having to remember and re-enter last year's settings.
+uint8_t  zoneEnabledBits = 0xFF;
 uint8_t  zoneDays[NUM_ZONES][NUM_PROGRAMS]     = {};
 
 struct QEntry { uint8_t zone; uint32_t secs; uint8_t trigger; }; // trigger: 0=manual, 1+=program id+1
@@ -447,6 +451,7 @@ void loadConfig() {
     snprintf(k, sizeof(k), "pm%d", pr); programs[pr].minute  = prefs.getUChar(k,  programs[pr].minute);
     snprintf(k, sizeof(k), "pw%d", pr); programs[pr].days    = prefs.getUChar(k,  programs[pr].days);
   }
+  zoneEnabledBits = prefs.getUChar("zEn", 0xFF);
   historyDays     = prefs.getUChar("hdays", 7);
   coolDayPct      = prefs.getUChar("wPct",  50);
   hotDayPct       = prefs.getUChar("wHPct", 150);
@@ -500,6 +505,7 @@ void saveConfig() {
     snprintf(k, sizeof(k), "pm%d", pr); prefs.putUChar(k,  programs[pr].minute);
     snprintf(k, sizeof(k), "pw%d", pr); prefs.putUChar(k,  programs[pr].days);
   }
+  prefs.putUChar("zEn",    zoneEnabledBits);
   prefs.putUChar("hdays",  historyDays);
   prefs.putUChar("wPct",   coolDayPct);
   prefs.putUChar("wHPct",  hotDayPct);
@@ -690,16 +696,20 @@ void checkSchedules() {
                     pr, PROG_NAMES[pr], DOW[ti.tm_wday], p.days);
       continue;
     }
-    int n = 0, configured = 0;
+    int n = 0, configured = 0, switchedOff = 0;
     for (int z = 0; z < NUM_ZONES; z++) {
       if (zoneDuration[z][pr] == 0) continue;
       configured++;
+      if (!((zoneEnabledBits >> z) & 1)) { switchedOff++; continue; }
       if (!(zoneDays[z][pr] & (1 << ti.tm_wday))) continue;
       enqueue(z, scaledDuration(zoneDuration[z][pr]), pr + 1); n++;
     }
-    if (n == 0 && configured > 0)
-      Serial.printf("Program %d (%s): queued 0 zones — all %d configured zones have %s disabled at zone level\n",
-                    pr, PROG_NAMES[pr], configured, DOW[ti.tm_wday]);
+    if (switchedOff)
+      Serial.printf("Program %d (%s): %d of %d configured zones are switched off\n",
+                    pr, PROG_NAMES[pr], switchedOff, configured);
+    if (n == 0 && configured > switchedOff)
+      Serial.printf("Program %d (%s): queued 0 zones — all %d remaining zones have %s disabled at zone level\n",
+                    pr, PROG_NAMES[pr], configured - switchedOff, DOW[ti.tm_wday]);
     else
       Serial.printf("Program %d (%s): queued %d zones\n", pr, PROG_NAMES[pr], n);
   }
@@ -826,6 +836,8 @@ body.light .dlabel,body.light .ep label,body.light .dur-row span,body.light .zto
 body.light .zdurs .dfield:first-child{border-color:#cbd5e1}
 body.light .ptog{background:#94a3b8}
 body.light .ztog{background:#94a3b8}
+body.light .zpow{background:#94a3b8}
+body.color .zpow{background:#404040}
 body.light .ptime,body.light .dur-row input,body.light .ep input,body.light .modal input{background:#f8fafc;border-color:#94a3b8;color:#1e293b;color-scheme:light}
 body.light .rnbtn{background:#f8fafc;color:#0369a1;border-color:#93c5fd}
 body.light .rnbtn:hover:not(:disabled){background:#eff6ff}
@@ -917,7 +929,14 @@ body.color .prn-btn:disabled{color:#525252;border-color:#333}
 .zsched-lbl{font-size:.82rem;font-weight:700;color:#7dd3fc;letter-spacing:.04em;white-space:nowrap;border:1px solid rgba(125,211,252,.4);background:rgba(125,211,252,.1);border-radius:.3rem;padding:.1rem .35rem}
 .zsched-c{position:absolute;left:calc(7 * 19px + 6 * 0.2rem + 20px);color:#a78bfa;border-color:rgba(167,139,250,.4);background:rgba(167,139,250,.1)}
 .zsched-dis{opacity:.75;filter:grayscale(1)}
-.zdays-wrap{position:relative;height:19px;margin-bottom:.35rem}
+.zfoot{display:flex;align-items:center;gap:.5rem;margin-bottom:.35rem}
+.zdays-wrap{position:relative;height:19px;flex:1;min-width:0}
+.zpow{position:relative;z-index:2;width:38px;height:21px;background:#334155;border-radius:21px;border:none;cursor:pointer;transition:background .2s;flex-shrink:0;padding:0}
+.zpow::after{content:'';position:absolute;top:2px;left:2px;width:17px;height:17px;background:#fff;border-radius:50%;transition:transform .2s}
+.zpow.on{background:#22c55e}
+.zpow.on::after{transform:translateX(17px)}
+.zcard.zoff .zsched-lbl,.zcard.zoff .zday{opacity:.55;filter:grayscale(1)}
+.zcard.zoff .zname{opacity:.5}
 .zday-row{display:flex;gap:.2rem;align-items:center;width:max-content}
 .zday-row-a{position:absolute;top:0;left:calc(7 * 19px + 6 * 0.2rem + 20px)}
 .zday{background:#1e293b;border:1px solid #334155;border-radius:.2rem;color:#64748b;font-size:.65rem;font-weight:700;width:19px;height:19px;display:flex;align-items:center;justify-content:center;cursor:pointer;transition:background .15s,border-color .15s,color .15s;padding:0;line-height:1;flex-shrink:0}
@@ -1378,7 +1397,7 @@ function renderZones(){
       '</div></div>'
     ).join('');
     const c=document.createElement('div');
-    c.className='zcard '+st;
+    c.className='zcard '+st+(z.enabled===false?' zoff':'');
     const d0=z.durations[0]||0,d1=programs.length>1?z.durations[1]||0:0;
     const zd=z.zdays||[];
     const schedRow=(!isExp&&(d0>0||d1>0))?
@@ -1397,7 +1416,12 @@ function renderZones(){
         DAYS.map((l,d)=>'<button class="zday '+cls+((mask>>d)&1?' on':'')+'"'+(isExp?' onclick="toggleZDay('+i+','+pr+','+d+')"':'')+'>'+l+'</button>').join('')+
         '</div>';
     });
-    if(zdayHtml)zdayHtml='<div class="zdays-wrap'+(isExp?'':' zdays-ro')+'">'+zdayHtml+'</div>';
+    zdayHtml='<div class="zdays-wrap'+(isExp?'':' zdays-ro')+'">'+zdayHtml+'</div>';
+    const zEn=z.enabled!==false;
+    const zfoot='<div class="zfoot">'+zdayHtml+
+      '<button class="zpow'+(zEn?' on':'')+'" onclick="toggleZoneEn('+i+')" title="'+
+      (zEn?'Zone on - scheduled runs enabled':'Zone off - schedules skipped, durations kept')+
+      '"></button></div>';
     c.innerHTML=
       '<div class="ztop">'+
         '<span class="zname">'+esc(z.name)+'</span>'+
@@ -1406,7 +1430,7 @@ function renderZones(){
         '<button class="xbtn" onclick="toggleExpand('+i+')">'+(isExp?'▴':'▾')+'</button>'+
       '</div>'+
       schedRow+
-      zdayHtml+
+      zfoot+
       '<div class="zexpand'+(isExp?' open':'')+'" id="zx'+i+'">'+
         '<div class="ztog-row">'+
           '<button class="ztog'+(isOn?' on':'')+'" onclick="toggleZone('+i+')"></button>'+
@@ -1492,6 +1516,17 @@ async function toggleZDay(zi,pr,day){
   await fetch('/setzone?id='+zi+'&zd'+pr+'='+z.zdays[pr]);
 }
 function toggleEdit(i){toggleSet(editing,i);}
+
+// Parks a zone for the season: schedules skip it, but its durations and day masks
+// stay put. A single-zone Run Now still works as an explicit manual override.
+async function toggleZoneEn(i){
+  const z=zones[i];
+  const next=!(z.enabled!==false);
+  z.enabled=next;
+  pushCL({type:'zoneEn',zi:i,name:z.name,val:next});
+  renderZones();
+  await fetch('/setzone?id='+i+'&en='+(next?1:0));
+}
 
 async function saveZone(i){
   const name=(document.getElementById('zn'+i).value.trim())||zones[i].name;
@@ -1678,6 +1713,8 @@ async function renderChangeLog(){
         html+=clRow(zn+esc(e.prog)+'</span>',DN[e.day],[e.val?'#22c55e':'#f87171',e.val?'on':'off'],ts);
       else if(t==='progEn')
         html+=clRow(zn+esc(e.prog)+'</span>',null,[e.val?'#22c55e':'#f87171',e.val?'enabled':'disabled'],ts);
+      else if(t==='zoneEn')
+        html+=clRow(zn+esc(e.name)+'</span>','zone',[e.val?'#22c55e':'#f87171',e.val?'switched on':'switched off'],ts);
       else if(t==='progTime')
         html+=clRow(zn+esc(e.prog)+'</span>',null,['#22c55e',fmtT(e.old)+' → '+fmtT(e.val)],ts);
       else if(t==='zoneName')
@@ -1746,6 +1783,7 @@ async function downloadLogs(){
       else if(t==='zoneDay'){what=q((e.name||'')+(e.pr!=null?' · '+prNC[e.pr]:'')+' · '+DNC[e.day]);detail=e.val?'on':'off';}
       else if(t==='progDay'){what=q((e.prog||'')+' · '+DNC[e.day]);detail=e.val?'on':'off';}
       else if(t==='progEn'){what=q(e.prog||'');detail=e.val?'enabled':'disabled';}
+      else if(t==='zoneEn'){what=q(e.name||'');detail=e.val?'switched on':'switched off';}
       else if(t==='progTime'){what=q(e.prog||'');detail=fmtTC(e.old)+' → '+fmtTC(e.val);}
       else if(t==='zoneName'){what=q(e.old+' → '+e.val);detail='renamed';}
       else if(t==='zonePin'){what=q(e.name||'');detail='GPIO pin '+e.old+' → '+e.val;}
@@ -2131,7 +2169,8 @@ static String buildConfigJson() {
   j += "],\"zones\":[";
   for (int i = 0; i < NUM_ZONES; i++) {
     if (i) j += ",";
-    j += "{\"id\":" + String(i) + ",\"name\":\"" + jsonEsc(relayNames[i]) + "\",\"pin\":" + String(relayPins[i]) + ",\"durations\":[";
+    j += "{\"id\":" + String(i) + ",\"name\":\"" + jsonEsc(relayNames[i]) + "\",\"pin\":" + String(relayPins[i]) +
+         ",\"enabled\":" + (((zoneEnabledBits >> i) & 1) ? "true" : "false") + ",\"durations\":[";
     for (int pr = 0; pr < NUM_PROGRAMS; pr++) {
       if (pr) j += ",";
       j += String(zoneDuration[i][pr]);
@@ -2299,7 +2338,7 @@ void setup() {
     if (id < 0 || id >= NUM_PROGRAMS) { req->send(400,"text/plain","bad id"); return; }
     int n = 0;
     for (int z = 0; z < NUM_ZONES; z++)
-      if (zoneDuration[z][id] > 0) {
+      if (zoneDuration[z][id] > 0 && ((zoneEnabledBits >> z) & 1)) {
         enqueue(z, scaledDuration(zoneDuration[z][id]), id + 1); n++;
       }
     Serial.printf("Manual run Program %d (%s): queued %d zones\n", id, PROG_NAMES[id], n);
@@ -2336,6 +2375,12 @@ void setup() {
       nm.trim();
       if (nm.length() == 0 || nm.length() > 31) { req->send(400,"text/plain","bad name"); return; }
       nm.toCharArray(relayNames[idx], 32);
+    }
+    if (req->hasParam("en")) {
+      if (req->getParam("en")->value() == "1") zoneEnabledBits |=  (1 << idx);
+      else                                     zoneEnabledBits &= ~(1 << idx);
+      Serial.printf("Zone %d (%s) switched %s\n", idx, relayNames[idx],
+                    ((zoneEnabledBits >> idx) & 1) ? "on" : "off");
     }
     if (req->hasParam("pin")) {
       int pin = req->getParam("pin")->value().toInt();
