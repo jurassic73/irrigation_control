@@ -114,14 +114,15 @@ If water drips from the black valve body itself (not from a fitting), the intern
 - Framework: Arduino via PlatformIO
 - Async HTTP server (ESPAsyncWebServer)
 - Config persisted in NVS (ESP32 Preferences) — nonvolatile memory that survives firmware upgrades, so your zone names, schedules, and settings are safe when you flash new code
+- Run, temperature, weather and change logs persisted to LittleFS — these also survive a firmware flash
 - Embedded single-file HTML/CSS/JS UI served from PROGMEM
 
 ### Resource usage (current build)
 
-|       | Used   | Available | %   |
-| ----- | ------ | --------- | --- |
-| RAM   | 55 KB  | 320 KB    | 17% |
-| Flash | 822 KB | 3,264 KB  | 25% |
+|       | Used     | Available | %   |
+| ----- | -------- | --------- | --- |
+| RAM   | 57 KB    | 320 KB    | 18% |
+| Flash | 1,075 KB | 3,264 KB  | 33% |
 
 ## Setup
 
@@ -141,13 +142,13 @@ If water drips from the black valve body itself (not from a fitting), the intern
 
    Both `secrets.h` and `location.h` are gitignored so your credentials and location stay off GitHub.
 
-4. Connect the ESP32-S3 via the **right USB-C port** (labeled USB on the board). This port uses native USB and handles bootloader mode automatically — no button pressing required for uploads or reboots. The left port (UART) requires holding BOOT then pressing RESET to enter download mode.
-4. Build and upload:
+5. Connect the ESP32-S3 via the **right USB-C port** (labeled USB on the board). This port uses native USB and handles bootloader mode automatically — no button pressing required for uploads or reboots. The left port (UART) requires holding BOOT then pressing RESET to enter download mode.
+6. Build and upload:
 
    ```text
    pio run --target upload
    ```
-5. Open a browser to the ESP32's IP address (printed on serial at 115200 baud).
+7. Open a browser to the ESP32's IP address (printed on serial at 115200 baud).
 
 ## Web UI
 
@@ -159,6 +160,13 @@ Each zone appears as a card showing its name, active status, and a **Run Now** b
 
 > <img src="pics/zones_overview.jpg" alt="Zone list — collapsed view showing pill labels and day-of-week indicators" width="288">
 
+At the right-hand end of the day-button row, a **power switch** parks the zone for
+the season. Switched off, the zone is skipped by both scheduled runs and program
+**Run Now**, but its durations and day masks are kept exactly as they were — so the
+timings you dialled in over the summer are still there next spring. A parked zone
+renders greyed out. A single-zone **Run Now** still works as an explicit manual
+override, so you can always test a parked zone.
+
 Tap the arrow to expand a zone. The day buttons become interactive so you can toggle individual days per program. The duration inputs let you set minutes and seconds independently for Morning and Afternoon.
 
 > <img src="pics/zone_expanded.jpg" alt="Zone expanded — duration inputs and interactive day toggles" width="288">
@@ -169,7 +177,9 @@ Tap the gear icon inside an expanded zone to open the configuration panel where 
 
 ### Run Now
 
-Tap **Run Now** on any zone to open the run dialog. Choose **1 min** or **5 min** for a quick soak, or tap **Custom** to dial in an exact duration.
+Tap **Run Now** on any zone to open the run dialog. It offers that zone's configured
+Morning and Afternoon durations as one-tap presets — colour-matched to the schedule
+pills — or tap **Custom** to dial in an exact duration.
 
 > <img src="pics/run_now.jpg" alt="Run Now — quick-select presets" width="288">
 
@@ -232,31 +242,66 @@ The **Run Log** shows a blue gallon figure (e.g., `2.4g`) next to each run's dur
 ### Additional features
 
 - **All Off** — stops the active zone and clears the entire queue.
+- **Run countdown** — the active zone's badge counts down the time remaining, ticking every second between the 15-second state polls.
 - **Run Log** — opens a modal showing watering history grouped by day and program, newest first. Includes per-run gallon measurements once the flow sensor is calibrated.
-- **Chip temperature** — live ESP32 die temperature in the bottom bar. Tap to open a history graph with **1 Day** and **1 Week** views. Auto-refreshes every 60 seconds while open. Samples recorded every 10 minutes (up to 1,008 in RAM, resets on reboot).
+- **Chip temperature** — live ESP32 die temperature in the bottom bar. Tap to open a history graph with **1 Day** and **1 Week** views. Auto-refreshes every 60 seconds while open. Samples recorded every 10 minutes (up to 1,008, persisted to LittleFS so they survive a reboot).
 - **Uptime** — time since last boot, updated every 15 seconds.
 - **Theme** — 🎨 icon cycles dark → light → color. Preference saved in localStorage.
 
 ## API Endpoints
 
-All endpoints are HTTP GET.
+**Read-only endpoints are `GET`. Every state-changing endpoint is `POST`.** A `GET`
+against a `POST` endpoint returns 404. This keeps a stray `<img src="http://host/alloff">`
+on some other page — or a link prefetcher, or a crawler — from actuating a valve.
+Parameters still travel in the query string either way, so `POST /relay?id=0&state=1`
+needs no request body.
 
-| Endpoint         | Params                                       | Description                                                                                                                      |
-| ---------------- | -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `/config`      | —                                           | JSON snapshot of full state (zones, programs, active zone, queue, epoch, time zone offset, uptime seconds)                       |
-| `/relay`       | `id`, `state` (0/1), `mins` (optional) | Turn a zone on (queued) or off                                                                                                   |
-| `/alloff`      | —                                           | Stop active zone, clear queue                                                                                                    |
-| `/setzone`     | `id`, `name`, `pin`, `d0`…`dN`    | Update zone name, GPIO pin, or per-program durations (minutes)                                                                   |
-| `/setprogram`  | `id`, `en`, `h`, `m`, `days`       | Update a watering program                                                                                                        |
-| `/history`     | —                                           | JSON run history (newest first), includes `retainDays` and `count`                                                           |
-| `/sethistory`        | `days`                                     | Set history retention window (1–90 days)                                                                                        |
-| `/temp`              | —                                           | Current chip die temperature as `{"c": 52.3, "f": 126.1}`                                                                      |
-| `/temphistory`       | `secs` (optional, default 604800)          | JSON array of temperature samples (10-min intervals) covering the requested window — up to 144 for 24 h, up to 1 008 for 7 days |
-| `/flowcal/start`     | —                                           | Reset pulse counter to 0 and begin counting — call before filling the calibration jug                                           |
-| `/flowcal/stop`      | —                                           | Stop counting; returns `{"pulses": N}` — the value to use as pulses/gallon                                                      |
-| `/setflow`           | `pin`, `ppg`                               | Set flow sensor GPIO pin and pulses-per-gallon; persisted to NVS                                                                |
-| `/setflowthresh`     | `pct`                                      | Set low-flow alarm threshold percentage (10–99); default 75                                                                     |
-| `/resetflowbaseline` | `zone`                                     | Clear the flow baseline and alarm for one zone; baseline re-learns from the next 3 runs                                         |
+### Read (GET)
+
+| Endpoint         | Params                              | Description                                                                                       |
+| ---------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `/`              | —                                   | The web UI, with the current state inlined so the first paint needs no round trip                 |
+| `/config`        | —                                   | JSON snapshot of full state — see fields below                                                    |
+| `/history`       | —                                   | Run history, newest first; includes `retainDays` and `count`                                      |
+| `/changelog`     | —                                   | Configuration change log, up to 50 entries                                                        |
+| `/weatherlog`    | —                                   | Last 7 weather fetches, newest first, successes and failures                                      |
+| `/temp`          | —                                   | Current chip die temperature as `{"c": 52.3, "f": 126.1}`                                         |
+| `/temphistory`   | `secs` (default 604800)             | Temperature samples at 10-min intervals — up to 144 for 24 h, up to 1008 for 7 days               |
+| `/flowcal/stop`  | —                                   | Returns `{"pulses": N}` — the value to use as pulses/gallon. Reads the counter; does not stop it  |
+
+### Write (POST)
+
+| Endpoint              | Params                                        | Description                                                                             |
+| --------------------- | --------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `/relay`              | `id`, `state` (0/1), `secs` (optional)        | Queue a zone, or stop it and drop it from the queue. `secs`, not minutes                |
+| `/alloff`             | —                                             | Stop the active zone and clear the queue                                                |
+| `/runprogram`         | `id`                                          | Queue a program's zones immediately, skipping switched-off zones                        |
+| `/setzone`            | `id`, `name`, `pin`, `en`, `d0`…`dN`, `zd0`…`zdN` | Zone name, GPIO pin, power switch, per-program durations **in seconds**, per-program day masks |
+| `/setprogram`         | `id`, `en`, `h`, `m`, `days`                  | Program enable, time and day mask (bit 0 = Sunday)                                      |
+| `/sethistory`         | `days`                                        | Run-history retention window, 1–90 days                                                 |
+| `/setcoolpct`         | `pct`                                         | Cool-day watering percentage, 10–90                                                     |
+| `/sethotpct`          | `pct`                                         | Hot-day watering percentage, 100–200                                                    |
+| `/setweatherconds`    | `htf`, `hwk`, `hof`, `ctf`, `ccp`, `cpx`      | Hot/cool thresholds: temp °F, wind kph, override °F, cool °F, cloud %, precip ×10 mm    |
+| `/fetchweather`       | —                                             | Trigger an immediate weather fetch on the background task                               |
+| `/pushcl`             | `e` (URL-encoded JSON)                        | Append a change-log entry                                                               |
+| `/clearcl`            | `confirm=1`                                   | Erase the change log. Without `confirm=1` returns 400 — it is destructive                |
+| `/flowcal/start`      | —                                             | Zero the pulse counter before filling the calibration jug                               |
+| `/setflow`            | `pin`, `ppg`                                  | Flow sensor GPIO pin and pulses-per-gallon                                              |
+| `/setflowthresh`      | `pct`                                         | Low-flow alarm threshold, 10–99; default 75                                             |
+| `/dismissflowalarm`   | —                                             | Hide the current low-flow banner until a fresh alarm occurs                             |
+| `/resetflowbaseline`  | `zone`                                        | Clear one zone's baseline and alarm; re-learns over the next 3 runs                     |
+
+### `/config` fields of note
+
+| Field          | Meaning                                                                             |
+| -------------- | ------------------------------------------------------------------------------------- |
+| `activeZone`   | Index of the running zone, or `-1`                                                  |
+| `activeEnd`    | Unix time the active run ends, or `0` — drives the countdown on the zone badge      |
+| `queued`       | Zone indices waiting, in order                                                      |
+| `chipF`        | Chip die temperature in °F                                                          |
+| `weatherScale` | Active watering percentage, 100 unless the day read hot or cool                     |
+| `zones[].enabled` | `false` when the zone's power switch is off — durations are retained             |
+| `zfBase` / `zfCnt` | Per-zone flow baseline (gal/min ×100) and how many learning runs have landed    |
 
 ### `/history` response example
 
@@ -270,7 +315,9 @@ All endpoints are HTTP GET.
       "name": "Back Garden",
       "trigger": "Morning",
       "start": 1746000000,
-      "durationSecs": 300
+      "durationSecs": 300,
+      "gallonsX10": 24,
+      "lowFlow": 0
     }
   ]
 }
@@ -293,16 +340,34 @@ A single water pressure source means one relay runs at a time. The scheduler use
 - A manual Run Now enqueues that zone at the head of the queue.
 - Turning a zone off removes it from the queue and stops it if active.
 
-Run history lives in a 200-entry circular RAM buffer and purges to the configured retention window on boot and after each run.
+Run history lives in a 200-entry circular buffer, mirrored to LittleFS (`hist.bin`) so
+it survives a reboot, and purges to the configured retention window after each run.
+
+Writes to flash are deferred: HTTP handlers run on the async server task, which must
+not block, so they flag what changed and the main loop performs the NVS and LittleFS
+writes on its next pass.
+
+A zone waters only when its power switch is on, the program's day mask includes today,
+**and** the zone's own day mask includes today.
 
 ## File Structure
 
 ```text
 irrigation_control/
 ├── platformio.ini
+├── partitions.csv            # 8 MB layout: dual OTA app slots + 1.5 MB LittleFS
+├── irrigation-widget.html    # Standalone desktop widget (reads /config and /temp)
 ├── src/
-│   ├── main.cpp          # All firmware + embedded HTML UI
-│   ├── secrets.h         # WiFi credentials (gitignored)
-│   └── secrets.h.example
+│   ├── main.cpp              # All firmware + embedded HTML UI
+│   ├── secrets.h             # WiFi credentials (gitignored)
+│   ├── secrets.h.example
+│   ├── location.h            # Latitude/longitude for weather (gitignored)
+│   └── location.h.example
+├── stl/                      # 3D-printable enclosure parts
+├── pics/                     # README screenshots and BOM thumbnails
 └── README.md
 ```
+
+Logs are kept on the LittleFS partition as `hist.bin`, `temp.bin`, `wlog.bin` and
+`clog.json`. Flashing firmware leaves them alone; writing a filesystem image with
+`pio run -t uploadfs` would erase all four.

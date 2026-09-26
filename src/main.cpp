@@ -12,7 +12,7 @@
 #include "secrets.h"
 #include "location.h"
 
-#define FW_VERSION        "1.1.1"
+#define FW_VERSION        "1.2.0"
 
 #define LED_PIN      48
 #define LED_COUNT     1
