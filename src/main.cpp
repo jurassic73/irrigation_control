@@ -12,7 +12,7 @@
 #include "secrets.h"
 #include "location.h"
 
-#define FW_VERSION        "1.1.0"
+#define FW_VERSION        "1.1.1"
 
 #define LED_PIN      48
 #define LED_COUNT     1
@@ -182,6 +182,22 @@ void loadLogs() {
   loadBin("/hist.bin", &histHead, sizeof(histHead), &histCount, sizeof(histCount), history, sizeof(history));
   loadBin("/temp.bin", &tempHistHead, sizeof(tempHistHead), &tempHistCount, sizeof(tempHistCount), tempHist, sizeof(tempHist));
   loadBin("/wlog.bin", &wLogHead, sizeof(wLogHead), &wLogCount, sizeof(wLogCount), wLog, sizeof(wLog));
+
+  // loadBin only validates file size, so head/count still come straight off flash.
+  // A corrupt-but-right-sized file would otherwise index out of bounds: purgeHistory
+  // and addHistory use histHead unwrapped, and a negative count makes
+  // (head + count) % MAX negative. Drop the ring rather than trust garbage.
+  auto clampRing = [](const char* what, int& head, int& count, int cap) {
+    if (count < 0 || count > cap || head < 0 || head >= cap) {
+      Serial.printf("loadLogs: %s ring invalid (head=%d count=%d cap=%d) — discarding\n",
+                    what, head, count, cap);
+      head = 0; count = 0;
+    }
+  };
+  clampRing("hist", histHead,     histCount,     HISTORY_MAX);
+  clampRing("temp", tempHistHead, tempHistCount, TEMP_HIST_MAX);
+  clampRing("wlog", wLogHead,     wLogCount,     WEATHER_LOG_MAX);
+
   Serial.printf("Logs loaded: hist=%d temp=%d wlog=%d\n", histCount, tempHistCount, wLogCount);
   { File f = LittleFS.open("/clog.json", "r"); if (f) { clJson = f.readString(); f.close(); } }
 }
@@ -417,6 +433,7 @@ void loadConfig() {
   coolCloudPct    = prefs.getUChar("wCCP",  80);
   coolPrecipX10   = prefs.getUChar("wCPX",  25);
   lastWeatherFetch    = (time_t)prefs.getULong("wFetch",   0);
+  weatherScale        = prefs.getUChar("wScale", 100);  // validated against the fetch date once time is known
   flowPin             = prefs.getUChar("flowPin", 16);
   flowPulsesPerGallon = prefs.getULong("flowPPG",  0);
   zoneFlowAlarmBits   = prefs.getUChar("zfAlarm",  0);
@@ -469,6 +486,7 @@ void saveConfig() {
   prefs.putUChar("wCCP",   coolCloudPct);
   prefs.putUChar("wCPX",   coolPrecipX10);
   prefs.putULong("wFetch",   (unsigned long)lastWeatherFetch);
+  prefs.putUChar("wScale",   weatherScale);
   prefs.putUChar("flowPin",  flowPin);
   prefs.putULong("flowPPG",  flowPulsesPerGallon);
   prefs.putUChar("zfAlarm",  zoneFlowAlarmBits);
@@ -486,6 +504,40 @@ void saveConfig() {
 }
 
 // ── Weather ───────────────────────────────────────────────────────────────────
+
+// Targeted write of just the two weather-state keys — avoids a full saveConfig()
+// (~60 NVS keys) from the weather task on every successful fetch.
+static void persistWeatherState() {
+  if (prefsMux) xSemaphoreTake(prefsMux, portMAX_DELAY);
+  Preferences p; p.begin("irr", false);
+  p.putULong("wFetch", (unsigned long)lastWeatherFetch);
+  p.putUChar("wScale", weatherScale);
+  p.end();
+  if (prefsMux) xSemaphoreGive(prefsMux);
+}
+
+// weatherScale is persisted so a reboot part-way through a hot/cool day keeps that
+// day's adjustment — the daily fetch window may already have passed, so there would
+// be no chance to recompute it. But the value must be discarded once the date rolls
+// over, otherwise yesterday's scale silently applies to today's programs.
+// Requires valid time; call only once timeValid is set.
+void expireStaleWeatherScale() {
+  if (weatherScale == 100) return;
+  if (lastWeatherFetch == 0) {
+    Serial.printf("Weather: discarding %d%% scale with no recorded fetch\n", weatherScale);
+    weatherScale = 100; persistWeatherState(); return;
+  }
+  time_t now; time(&now);
+  struct tm nowTm{}, fetchTm{};
+  localtime_r(&now, &nowTm);
+  localtime_r(&lastWeatherFetch, &fetchTm);
+  if (nowTm.tm_year != fetchTm.tm_year || nowTm.tm_yday != fetchTm.tm_yday) {
+    Serial.printf("Weather: discarding stale %d%% scale from a previous day\n", weatherScale);
+    weatherScale = 100; persistWeatherState();
+  } else {
+    Serial.printf("Weather: restored %d%% scale from today's fetch\n", weatherScale);
+  }
+}
 
 void fetchWeather(bool manual = false) {
   weatherFetchActive = true;
@@ -559,15 +611,23 @@ void fetchWeather(bool manual = false) {
   bool cool     = !hot && (rained || (!override_ && ((maxF < (float)coolTempF) || (cloud > (float)coolCloudPct))));
   weatherScale = hot ? hotDayPct : (cool ? coolDayPct : 100);
   lastWeatherFetch = now;
-  { if (prefsMux) xSemaphoreTake(prefsMux, portMAX_DELAY);
-    Preferences p; p.begin("irr", false); p.putULong("wFetch", (unsigned long)now); p.end();
-    if (prefsMux) xSemaphoreGive(prefsMux); }
+  persistWeatherState();
   pushWeatherLog(now, maxF, precip, cloud, windK, weatherScale, true, 0, manual);
   Serial.printf("Weather: %.1f°F %.1fmm %.0f%% cloud %.1fkph wind → scale %d%%\n", maxF, precip, cloud, windK, weatherScale);
   weatherFetchActive = false;
 }
 
 // ── Scheduler ─────────────────────────────────────────────────────────────────
+
+// Apply the active weather scale to a configured zone duration. Clamped to
+// MAX_RELAY_SECS at the top: hotDayPct can reach 200%, which would otherwise push
+// a long zone past the hard per-run cap that the HTTP inputs enforce.
+static uint32_t scaledDuration(uint16_t baseSecs) {
+  uint32_t d = (uint32_t)baseSecs * weatherScale / 100;
+  if (d < 1) d = 1;
+  if (d > MAX_RELAY_SECS) d = MAX_RELAY_SECS;
+  return d;
+}
 
 void checkSchedules() {
   if (!timeValid) return;
@@ -595,9 +655,7 @@ void checkSchedules() {
       if (zoneDuration[z][pr] == 0) continue;
       configured++;
       if (!(zoneDays[z][pr] & (1 << ti.tm_wday))) continue;
-      uint32_t dur = (uint32_t)zoneDuration[z][pr] * weatherScale / 100;
-      if (dur < 1) dur = 1;
-      enqueue(z, dur, pr + 1); n++;
+      enqueue(z, scaledDuration(zoneDuration[z][pr]), pr + 1); n++;
     }
     if (n == 0 && configured > 0)
       Serial.printf("Program %d (%s): queued 0 zones — all %d configured zones have %s disabled at zone level\n",
@@ -2090,8 +2148,9 @@ void setup() {
     for (int t = 0; t < 20 && !getLocalTime(&ti); t++) { delay(500); Serial.print("."); }
     Serial.println();
     if (ti.tm_year > 100) { timeValid = true; Serial.println("NTP sync OK"); }
-    else Serial.println("NTP sync failed — schedules paused until time is valid");
+    else Serial.println("NTP sync failed — schedules paused, loop() will retry");
   }
+  if (timeValid) expireStaleWeatherScale();
   { time_t t; time(&t); addTempSample(t, temperatureRead()); lastTempSample = millis(); }
 
   server.on("/", HTTP_GET, [](AsyncWebServerRequest* req){
@@ -2185,9 +2244,7 @@ void setup() {
     int n = 0;
     for (int z = 0; z < NUM_ZONES; z++)
       if (zoneDuration[z][id] > 0) {
-        uint32_t dur = (uint32_t)zoneDuration[z][id] * weatherScale / 100;
-        if (dur < 1) dur = 1;
-        enqueue(z, dur, id + 1); n++;
+        enqueue(z, scaledDuration(zoneDuration[z][id]), id + 1); n++;
       }
     Serial.printf("Manual run Program %d (%s): queued %d zones\n", id, PROG_NAMES[id], n);
     req->send(200,"text/plain","ok");
@@ -2432,6 +2489,19 @@ void loop() {
   unsigned long now_ms = millis();
   runQueue();
   bool wifiUp = (WiFi.status() == WL_CONNECTED);
+
+  // SNTP keeps running in the background and often lands well after setup() gave up
+  // (slow router, WiFi only up later). Without this retry, one failed boot-time sync
+  // would leave checkSchedules() disabled until someone power-cycled the controller.
+  if (!timeValid && wifiUp) {
+    time_t t; time(&t);
+    if (t > 1700000000) {            // 2023-11-14 — safely past the un-synced default
+      timeValid = true;
+      Serial.println("NTP synced late — schedules resumed");
+      expireStaleWeatherScale();
+    }
+  }
+
   if (!wifiUp) {
     if (now_ms - lastWifiRetry > 30000) {
       lastWifiRetry = now_ms;
