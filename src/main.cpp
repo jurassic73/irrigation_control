@@ -63,7 +63,9 @@ static portMUX_TYPE flowMux  = portMUX_INITIALIZER_UNLOCKED;
 #define HISTORY_MAX 200
 // trigger byte: low 7 bits = trigger id (0=manual, 1+=program), bit 7 = low-flow detected this run
 #define HIST_LOWFLOW 0x80
-struct HistoryEntry { time_t start; uint16_t duration; uint8_t zone; uint8_t trigger; uint16_t gallonsX10; };
+// gallonsX100 = hundredths of a gallon. Tenths truncated almost every drip-zone run
+// to zero, which also fed checkFlowRate a zero rate and produced false low-flow alarms.
+struct HistoryEntry { time_t start; uint16_t duration; uint8_t zone; uint8_t trigger; uint16_t gallonsX100; };
 HistoryEntry history[HISTORY_MAX];
 int histHead = 0, histCount = 0;
 uint8_t historyDays = 7;
@@ -116,6 +118,8 @@ int wLogCount = 0, wLogHead = 0;
 
 String clJson = "[]";
 SemaphoreHandle_t clMux = nullptr;  // guards clJson between HTTP callbacks and the deferred write
+Preferences       prefs;
+SemaphoreHandle_t prefsMux = nullptr;  // guards all Preferences access across cores
 bool timeValid = false;  // set true only after a successful NTP sync
 
 // ── Deferred persistence ──────────────────────────────────────────────────────
@@ -227,6 +231,31 @@ void loadLogs() {
   clampRing("temp", tempHistHead, tempHistCount, TEMP_HIST_MAX);
   clampRing("wlog", wLogHead,     wLogCount,     WEATHER_LOG_MAX);
 
+  // Rescale tenths-of-a-gallon entries written before the precision fix, and drop the
+  // flow baselines learned from them — those were derived from truncated volumes, so
+  // checking accurate rates against them would misfire. They re-learn over 3 runs.
+  {
+    if (prefsMux) xSemaphoreTake(prefsMux, portMAX_DELAY);
+    Preferences mp; mp.begin("irr", false);
+    bool migrate = mp.getUChar("logVer", 0) < 1;
+    if (migrate) mp.putUChar("logVer", 1);
+    mp.end();
+    if (prefsMux) xSemaphoreGive(prefsMux);
+    if (migrate) {
+      for (int i = 0; i < histCount; i++) {
+        HistoryEntry& e = history[(histHead + i) % HISTORY_MAX];
+        uint32_t v = (uint32_t)e.gallonsX100 * 10U;
+        e.gallonsX100 = (uint16_t)(v > 65535U ? 65535U : v);
+      }
+      for (int z = 0; z < NUM_ZONES; z++) {
+        zoneFlowBaseline[z] = 0; zoneBaselineCount[z] = 0; zoneBaselineSum[z] = 0;
+      }
+      zoneFlowAlarmBits = 0; zoneFlowAlarmDismissed = 0;
+      Serial.printf("Log migration: rescaled %d entries to hundredths, reset flow baselines\n", histCount);
+      markDirty(DIRTY_HISTORY | DIRTY_CONFIG);
+    }
+  }
+
   Serial.printf("Logs loaded: hist=%d temp=%d wlog=%d\n", histCount, tempHistCount, wLogCount);
   { File f = LittleFS.open("/clog.json", "r"); if (f) { clJson = f.readString(); f.close(); } }
 }
@@ -239,8 +268,6 @@ void pushWeatherLog(time_t t, float maxF, float precip, float cloud, float wind,
   markDirty(DIRTY_WLOG);
 }
 
-Preferences       prefs;
-SemaphoreHandle_t prefsMux = nullptr;  // guards all Preferences access across cores
 AsyncWebServer    server(80);
 
 inline float toF(float c) { return c * 9.0f / 5.0f + 32.0f; }
@@ -307,11 +334,13 @@ void saveConfig();  // forward declaration — defined after loadConfig
 // Evaluate a completed zone run against its flow baseline.
 // rateX100 = gal/min * 100.  Skips short/zero-flow runs during learning phase.
 // Returns true if this run came in below the low-flow threshold.
-bool checkFlowRate(uint8_t zone, uint16_t gallonsX10, uint16_t durSecs) {
+bool checkFlowRate(uint8_t zone, uint32_t pulsesUsed, uint16_t durSecs) {
   if (zone >= NUM_ZONES || flowPulsesPerGallon == 0) return false;
   if (durSecs < 30) return false;                   // too short to be meaningful
-  uint32_t rateX100 = gallonsX10 > 0
-    ? (uint32_t)gallonsX10 * 600UL / durSecs : 0;  // gal/min * 100
+  // gal/min * 100, straight from pulses: pulses * 60 / ppg / durSecs, scaled by 100.
+  // Deriving this from the rounded volume made every sub-0.1 gal run read as zero flow.
+  uint32_t rateX100 = (uint32_t)((uint64_t)pulsesUsed * 6000ULL /
+                                 ((uint64_t)flowPulsesPerGallon * durSecs));
 
   if (zoneFlowBaseline[zone] == 0) {
     // still in learning phase — only accumulate positive readings
@@ -413,11 +442,14 @@ void stopActive(int requireZone = -1) {
   activeZone = -1; activeEndTime = 0; activeStartTime = 0;
   portEXIT_CRITICAL(&stateMux);
   uint32_t pulsesUsed = readFlowPulses() - startPulses;
-  uint16_t gallonsX10 = flowPulsesPerGallon > 0
-    ? (uint16_t)min((uint32_t)65535U, pulsesUsed * 10U / flowPulsesPerGallon) : 0;
-  bool lowFlow = checkFlowRate((uint8_t)zone, gallonsX10, dur);
+  uint16_t gallonsX100 = 0;
+  if (flowPulsesPerGallon > 0) {
+    uint64_t v = (uint64_t)pulsesUsed * 100ULL / flowPulsesPerGallon;
+    gallonsX100 = (uint16_t)(v > 65535ULL ? 65535ULL : v);
+  }
+  bool lowFlow = checkFlowRate((uint8_t)zone, pulsesUsed, dur);
   if (lowFlow) trig |= HIST_LOWFLOW;
-  addHistory({start, dur, (uint8_t)zone, trig, gallonsX10});
+  addHistory({start, dur, (uint8_t)zone, trig, gallonsX100});
   setRelay(zone, false);
   Serial.printf("Zone %d (%s) done after %us\n", zone, relayNames[zone], dur);
 }
@@ -1123,7 +1155,11 @@ body.color .wcond-row input{background:#171717;border-color:#606060;color:#e5e5e
 </div>
 <div class="log-ov" id="log-ov" style="display:none" onclick="if(event.target===this)closeLog()">
   <div class="log-modal">
-    <div class="log-head"><span>&#128203; Run History</span><button class="log-close" onclick="closeLog()">&#10005;</button></div>
+    <div class="log-head"><span>&#128203; Run History</span><div style="display:flex;align-items:center;gap:.6rem">
+      <label style="font-size:.68rem;color:#94a3b8;display:flex;align-items:center;gap:.3rem;white-space:nowrap">Keep
+        <input type="number" id="hist-days" min="1" max="90" onchange="saveHistoryDays()"
+               style="width:3.4rem;background:#0f172a;border:1px solid #475569;border-radius:.3rem;color:#e2e8f0;padding:.15rem .3rem;font-size:.72rem;text-align:center">days</label>
+      <button class="log-close" onclick="closeLog()">&#10005;</button></div></div>
     <div class="log-body" id="log-body"><div class="log-empty">Loading…</div></div>
   </div>
 </div>
@@ -1391,6 +1427,7 @@ function clDescribe(e){
 }
 function escA(s){return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;');}
 function pad(n){return String(n).padStart(2,'0');}
+function fmtGal(x100){const g=(x100||0)/100;return g<1?g.toFixed(2):g.toFixed(1);}
 function fmtSchedDur(sec){const m=Math.floor(sec/60),s=sec%60;return m&&s?m+'m'+s+'s':m?m+'m':s+'sec';}
 function zst(id){return id===activeZone?'active':queued.includes(id)?'queued':'off';}
 
@@ -1654,10 +1691,20 @@ function toggleLogSection(btn){
   body.style.display=open?'none':'block';
   btn.textContent=btn.textContent.replace(open?'▾':'▸',open?'▸':'▾');
 }
+async function saveHistoryDays(){
+  const inp=document.getElementById('hist-days');
+  const v=parseInt(inp.value,10);
+  if(isNaN(v)||v<1||v>90){inp.value=inp.dataset.saved||7;return;}
+  inp.dataset.saved=v;
+  await post('/sethistory?days='+v);
+  await openLog();          // entries outside the new window are purged server-side
+}
 async function openLog(){
   document.getElementById('log-ov').style.display='flex';
   const data=await(await fetch('/history')).json();
   const el=document.getElementById('log-body');
+  const hd=document.getElementById('hist-days');
+  if(hd&&data.retainDays!=null){hd.value=data.retainDays;hd.dataset.saved=data.retainDays;}
   if(!data.count){el.innerHTML='<div class="log-empty">No history yet.</div>';return;}
   const days={};
   data.history.forEach(e=>{
@@ -1678,7 +1725,7 @@ async function openLog(){
       const badge=trig==='Manual'
         ?'<span style="font-size:.65rem;background:#1e40af;color:#93c5fd;border-radius:.25rem;padding:.05rem .3rem;margin-left:.3rem">Manual</span>'
         :'<span style="font-size:.65rem;background:#1e293b;color:#94a3b8;border-radius:.25rem;padding:.05rem .3rem;margin-left:.3rem">'+esc(trig)+'</span>';
-      const galSpan=(e.gallonsX10>0)?'<span style="font-size:.68rem;color:#38bdf8;min-width:34px;text-align:right">'+(e.gallonsX10/10).toFixed(1)+'g</span>':'';
+      const galSpan=(e.gallonsX100>0)?'<span style="font-size:.68rem;color:#38bdf8;min-width:38px;text-align:right">'+fmtGal(e.gallonsX100)+'g</span>':'';
       const lowPill=e.lowFlow?'<span style="font-size:.6rem;background:#7f1d1d;color:#fca5a5;border-radius:.25rem;padding:.05rem .3rem;margin-left:.3rem" title="Low flow detected on this run">&#9888; Low flow</span>':'';
       html+='<div class="log-entry">'+
         '<span class="log-zone">'+esc(e.name)+badge+lowPill+'</span>'+
@@ -1776,7 +1823,7 @@ async function downloadLogs(){
     });
     csv+='\r\n=== RUN HISTORY ===\r\nDate,Time,Zone,Duration,Water (gal),Trigger\r\n';
     if(hist.count)[...hist.history].reverse().forEach(e=>{
-      const gal=e.gallonsX10>0?(e.gallonsX10/10).toFixed(1):'';
+      const gal=e.gallonsX100>0?(e.gallonsX100/100).toFixed(2):'';
       csv+=csvDate(e.start,false)+','+csvTime(e.start,false)+','+q(e.name)+','+fmtDur(e.durationSecs)+','+gal+','+q(e.trigger)+'\r\n';
     });
     csv+='\r\n=== CHANGE LOG ===\r\nDate,Time,Type,What,Detail\r\n';
@@ -1863,8 +1910,8 @@ function updateFlowRow(galToday, galWeek){
   if(!row)return;
   if(flowConfig.ppg>0){
     row.style.display='flex';
-    document.getElementById('fl-today').textContent=galToday.toFixed(1);
-    document.getElementById('fl-week').textContent=galWeek.toFixed(1);
+    document.getElementById('fl-today').textContent=fmtGal(Math.round(galToday*100));
+    document.getElementById('fl-week').textContent=fmtGal(Math.round(galWeek*100));
   } else {
     row.style.display='none';
   }
@@ -2198,13 +2245,13 @@ static String buildConfigJson() {
     time_t weekStart  = todayStart - (time_t)ti2.tm_wday * 86400;
     for (int i = 0; i < histCount; i++) {
       HistoryEntry& e = history[(histHead + i) % HISTORY_MAX];
-      if (e.start >= weekStart)  galWeek  += e.gallonsX10 / 10.0f;
-      if (e.start >= todayStart) galToday += e.gallonsX10 / 10.0f;
+      if (e.start >= weekStart)  galWeek  += e.gallonsX100 / 100.0f;
+      if (e.start >= todayStart) galToday += e.gallonsX100 / 100.0f;
     }
   }
   char fbuf[200];
   snprintf(fbuf, sizeof(fbuf),
-    ",\"flowPin\":%u,\"flowPPG\":%lu,\"flowAlarm\":%u,\"flowAlarmDismissed\":%u,\"flowThreshPct\":%u,\"flowGalToday\":%.1f,\"flowGalWeek\":%.1f",
+    ",\"flowPin\":%u,\"flowPPG\":%lu,\"flowAlarm\":%u,\"flowAlarmDismissed\":%u,\"flowThreshPct\":%u,\"flowGalToday\":%.2f,\"flowGalWeek\":%.2f",
     flowPin, (unsigned long)flowPulsesPerGallon, zoneFlowAlarmBits, zoneFlowAlarmDismissed, flowAlarmThreshPct, galToday, galWeek);
   j += fbuf;
   j += ",\"zfBase\":[";
@@ -2460,7 +2507,7 @@ void setup() {
            ",\"lowFlow\":" + String((e.trigger & HIST_LOWFLOW) ? 1 : 0) +
            ",\"start\":" + String((long)e.start) +
            ",\"durationSecs\":" + String(e.duration) +
-           ",\"gallonsX10\":" + String(e.gallonsX10) + "}";
+           ",\"gallonsX100\":" + String(e.gallonsX100) + "}";
     }
     j += "]}";
     req->send(200, "application/json", j);

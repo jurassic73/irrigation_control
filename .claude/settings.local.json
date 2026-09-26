@@ -77,7 +77,13 @@
       "Bash(echo \"=== exit: $? \\(no output = current file already has everything in stash\\) ===\")",
       "Read(//c/Users/admin/.platformio/penv/Scripts/**)",
       "Read(//c/Users/admin/.platformio/**)",
-      "PowerShell(& \"$env:USERPROFILE\\\\.platformio\\\\penv\\\\Scripts\\\\platformio.exe\" run -e esp32 2>&1 | Select-Object -Last 25)"
+      "PowerShell(& \"$env:USERPROFILE\\\\.platformio\\\\penv\\\\Scripts\\\\platformio.exe\" run -e esp32 2>&1 | Select-Object -Last 25)",
+      "PowerShell(pio run -e esp32 2>&1)",
+      "PowerShell($p=\"$env:USERPROFILE\\\\.platformio\\\\penv\\\\Scripts\\\\platformio.exe\"; if \\(Test-Path $p\\) { \"found: $p\" } else { \"not at $p\"; Get-ChildItem \"$env:USERPROFILE\\\\.platformio\" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name })",
+      "PowerShell(Get-ChildItem \"$env:USERPROFILE\\\\.platformio\\\\penv\" -ErrorAction SilentlyContinue | Select-Object Mode,Name; \"--- python3 ---\"; Get-ChildItem \"$env:USERPROFILE\\\\.platformio\\\\python3\" -ErrorAction SilentlyContinue | Select-Object -First 10 -ExpandProperty Name)",
+      "PowerShell(Get-ChildItem \"$env:USERPROFILE\\\\.platformio\\\\penv\\\\Scripts\" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)",
+      "PowerShell(& \"$env:USERPROFILE\\\\.platformio\\\\penv\\\\Scripts\\\\python.exe\" -m platformio --version)",
+      "PowerShell(& \"$env:USERPROFILE\\\\.platformio\\\\penv\\\\Scripts\\\\python.exe\" -m platformio run -e esp32 -d \"d:\\\\hans_docs\\\\github\\\\irrigation_control\" 2>&1 | Select-Object -Last 45)"
     ],
     "additionalDirectories": [
       "D:\\hans_docs\\github\\irrigation_control\\.git\\rebase-merge"

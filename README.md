@@ -237,7 +237,16 @@ Once a baseline is established for a zone:
 
 The **Flow Adjustment row** below the weather badge shows today's and this week's total gallons delivered across all zones, along with the active GPIO pin and pulses/gallon setting. It is hidden until the sensor is calibrated.
 
-The **Run Log** shows a blue gallon figure (e.g., `2.4g`) next to each run's duration once flow data is available. The CSV export includes a **Water (gal)** column.
+The **Run Log** shows a blue gallon figure next to each run's duration once flow data
+is available, and the CSV export includes a **Water (gal)** column. Volumes are stored
+to the hundredth of a gallon and displayed with two decimals below 1 gal, because drip
+zones routinely deliver 0.03–0.7 gal per run — at tenth-gallon resolution most runs
+recorded as `0.0`, which also made the low-flow check see zero flow and raise false
+alarms. The low-flow rate is computed from raw sensor pulses rather than the rounded
+volume, so display precision and alarm accuracy are independent.
+
+Retention is set from the **Keep _n_ days** field in the Run History panel header
+(1–90 days, default 7).
 
 ### Additional features
 
@@ -277,8 +286,8 @@ needs no request body.
 | `/alloff`             | —                                             | Stop the active zone and clear the queue                                                |
 | `/runprogram`         | `id`                                          | Queue a program's zones immediately, skipping switched-off zones                        |
 | `/setzone`            | `id`, `name`, `pin`, `en`, `d0`…`dN`, `zd0`…`zdN` | Zone name, GPIO pin, power switch, per-program durations **in seconds**, per-program day masks |
+| `/sethistory`         | `days`                                        | Retention window, 1–90 days. Also settable from the Run History panel header |
 | `/setprogram`         | `id`, `en`, `h`, `m`, `days`                  | Program enable, time and day mask (bit 0 = Sunday)                                      |
-| `/sethistory`         | `days`                                        | Run-history retention window, 1–90 days                                                 |
 | `/setcoolpct`         | `pct`                                         | Cool-day watering percentage, 10–90                                                     |
 | `/sethotpct`          | `pct`                                         | Hot-day watering percentage, 100–200                                                    |
 | `/setweatherconds`    | `htf`, `hwk`, `hof`, `ctf`, `ccp`, `cpx`      | Hot/cool thresholds: temp °F, wind kph, override °F, cool °F, cloud %, precip ×10 mm    |
@@ -316,7 +325,7 @@ needs no request body.
       "trigger": "Morning",
       "start": 1746000000,
       "durationSecs": 300,
-      "gallonsX10": 24,
+      "gallonsX100": 237,
       "lowFlow": 0
     }
   ]
