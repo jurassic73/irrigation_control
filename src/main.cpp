@@ -888,6 +888,7 @@ body.color .weather-badge.hot{border-color:rgba(251,146,60,.4);background:rgba(2
 .log-ov{position:fixed;inset:0;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;z-index:200}
 .log-modal{background:#0f172a;border-radius:1rem;width:100%;max-width:500px;max-height:90vh;display:flex;flex-direction:column}
 .log-head{display:flex;align-items:center;justify-content:space-between;padding:.85rem 1rem;border-bottom:1px solid #475569;flex-shrink:0;cursor:grab}
+.log-head,.tg-head,.modal-title,#wcond-drag{touch-action:none}
 .log-head span{font-size:.88rem;font-weight:600;color:#e2e8f0}
 .log-close{background:none;border:none;color:#94a3b8;cursor:pointer;font-size:1.1rem;line-height:1;padding:.2rem}
 .log-close:hover{color:#94a3b8}
@@ -1293,7 +1294,7 @@ async function saveCoolPct(){
   const old=parseInt(inp.dataset.saved||v,10);
   if(v!==old) pushCL({type:'coolPct',old,val:v});
   inp.dataset.saved=v;
-  await fetch('/setcoolpct?pct='+v);
+  await post('/setcoolpct?pct='+v);
 }
 async function saveHotPct(){
   const inp=document.getElementById('hot-pct-input');
@@ -1302,7 +1303,7 @@ async function saveHotPct(){
   const old=parseInt(inp.dataset.saved||v,10);
   if(v!==old) pushCL({type:'hotPct',old,val:v});
   inp.dataset.saved=v;
-  await fetch('/sethotpct?pct='+v);
+  await post('/sethotpct?pct='+v);
 }
 
 function openWeatherConds(){
@@ -1333,7 +1334,7 @@ async function saveWeatherConds(){
   const changed=ctf!==old.coolTempF||ccp!==old.coolCloudPct||cpx!==old.coolPrecipX10||hof!==old.hotOverrideF||htf!==old.hotTempF||hwk!==old.hotWindKph;
   if(changed) pushCL({type:'weatherCond',old,val:{coolTempF:ctf,coolCloudPct:ccp,coolPrecipX10:cpx,hotOverrideF:hof,hotTempF:htf,hotWindKph:hwk}});
   weatherConds={coolTempF:ctf,coolCloudPct:ccp,coolPrecipX10:cpx,hotOverrideF:hof,hotTempF:htf,hotWindKph:hwk};
-  await fetch('/setweatherconds?htf='+htf+'&hwk='+hwk+'&hof='+hof+'&ctf='+ctf+'&ccp='+ccp+'&cpx='+cpx);
+  await post('/setweatherconds?htf='+htf+'&hwk='+hwk+'&hof='+hof+'&ctf='+ctf+'&ccp='+ccp+'&cpx='+cpx);
   closeWeatherConds();
 }
 
@@ -1355,7 +1356,39 @@ function tickRemaining(){
 }
 setInterval(tickClock,1000);
 
+// Mutating endpoints are POST-only, so a cross-site <img>/prefetch/crawler GET
+// cannot actuate a valve or rewrite config. Query params still ride in the URL.
+function post(u){return fetch(u,{method:'POST'});}
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+const CL_PROG=['Morning','Afternoon'];
+const CL_DOW=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+function clFmtTime(hm){
+  const v=String(hm??'');const[h,m]=v.split(':').map(Number);
+  if(isNaN(h)||isNaN(m))return v;
+  const ap=h>=12?'PM':'AM';return (h%12||12)+':'+(m<10?'0':'')+m+' '+ap;
+}
+// Single source of truth for how a change-log entry reads. Values come from /pushcl
+// so every field is treated as untrusted text; callers escape before insertion.
+function clDescribe(e){
+  const t=e.type||'duration';
+  const pr=e.pr!=null?(CL_PROG[e.pr]||('Prog '+e.pr)):'';
+  const dow=CL_DOW[e.day]??e.day;
+  const G='#22c55e',R='#f87171';
+  switch(t){
+    case 'duration':    return {what:e.name||'',mid:pr,detail:fmtDur(e.old)+' → '+fmtDur(e.val),color:e.val<e.old?R:G};
+    case 'zoneDay':     return {what:e.name||'',mid:pr+' · '+dow,detail:e.val?'on':'off',color:e.val?G:R};
+    case 'progDay':     return {what:e.prog||'',mid:String(dow),detail:e.val?'on':'off',color:e.val?G:R};
+    case 'progEn':      return {what:e.prog||'',mid:'',detail:e.val?'enabled':'disabled',color:e.val?G:R};
+    case 'zoneEn':      return {what:e.name||'',mid:'zone',detail:e.val?'switched on':'switched off',color:e.val?G:R};
+    case 'progTime':    return {what:e.prog||'',mid:'',detail:clFmtTime(e.old)+' → '+clFmtTime(e.val),color:G};
+    case 'zoneName':    return {what:e.old+' → '+e.val,mid:'renamed',detail:'',color:G};
+    case 'zonePin':     return {what:e.name||'',mid:'GPIO',detail:'pin '+e.old+' → '+e.val,color:G};
+    case 'coolPct':     return {what:'Cool day %',mid:'',detail:e.old+'% → '+e.val+'%',color:G};
+    case 'hotPct':      return {what:'Hot day %',mid:'',detail:e.old+'% → '+e.val+'%',color:'#fb923c'};
+    case 'weatherCond': return {what:'Weather conditions',mid:'',detail:'updated',color:'#7dd3fc'};
+    default:            return {what:e.name||e.prog||t,mid:'',detail:'',color:'#94a3b8'};
+  }
+}
 function escA(s){return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;');}
 function pad(n){return String(n).padStart(2,'0');}
 function fmtSchedDur(sec){const m=Math.floor(sec/60),s=sec%60;return m&&s?m+'m'+s+'s':m?m+'m':s+'sec';}
@@ -1455,13 +1488,13 @@ async function togglePDay(pi,di){
   programs[pi].days^=(1<<di);
   pushCL({type:'progDay',pi,prog:programs[pi].name,day:di,val:oldBit^1});
   renderPrograms();
-  await fetch('/setprogram?id='+pi+'&en='+(programs[pi].enabled?1:0)+'&h='+programs[pi].h+'&m='+programs[pi].m+'&days='+programs[pi].days);
+  await post('/setprogram?id='+pi+'&en='+(programs[pi].enabled?1:0)+'&h='+programs[pi].h+'&m='+programs[pi].m+'&days='+programs[pi].days);
 }
 
 async function toggleProg(i){
   programs[i].enabled=!programs[i].enabled;
   pushCL({type:'progEn',pi:i,prog:programs[i].name,val:programs[i].enabled});
-  await fetch('/setprogram?id='+i+'&en='+(programs[i].enabled?1:0)+'&h='+programs[i].h+'&m='+programs[i].m+'&days='+programs[i].days);
+  await post('/setprogram?id='+i+'&en='+(programs[i].enabled?1:0)+'&h='+programs[i].h+'&m='+programs[i].m+'&days='+programs[i].days);
   render();
 }
 
@@ -1470,7 +1503,7 @@ async function saveProg(i){
   const[h,m]=t?t.split(':').map(Number):[programs[i].h,programs[i].m];
   if(h!==programs[i].h||m!==programs[i].m)
     pushCL({type:'progTime',pi:i,prog:programs[i].name,old:pad(programs[i].h)+':'+pad(programs[i].m),val:pad(h)+':'+pad(m)});
-  await fetch('/setprogram?id='+i+'&en='+(programs[i].enabled?1:0)+'&h='+h+'&m='+m+'&days='+programs[i].days);
+  await post('/setprogram?id='+i+'&en='+(programs[i].enabled?1:0)+'&h='+h+'&m='+m+'&days='+programs[i].days);
   programs[i].h=h;programs[i].m=m;
   render();
 }
@@ -1478,10 +1511,10 @@ async function saveProg(i){
 async function toggleZone(i){
   const st=zst(i);
   if(st==='off'){
-    await fetch('/relay?id='+i+'&state=1');
+    await post('/relay?id='+i+'&state=1');
     queued=[...queued,i];
   } else {
-    await fetch('/relay?id='+i+'&state=0');
+    await post('/relay?id='+i+'&state=0');
     queued=queued.filter(z=>z!==i);
     if(activeZone===i)activeZone=-1;
   }
@@ -1491,7 +1524,7 @@ async function toggleZone(i){
 
 async function pushCL(e){
   e.ts=Math.floor(Date.now()/1000);
-  await fetch('/pushcl?e='+encodeURIComponent(JSON.stringify(e)));
+  await post('/pushcl?e='+encodeURIComponent(JSON.stringify(e)));
 }
 async function saveDur(zi,pr){
   const m=parseInt(document.getElementById('durM'+zi+'_'+pr).value)||0;
@@ -1501,7 +1534,7 @@ async function saveDur(zi,pr){
   if(val!==old) pushCL({type:'duration',zi,name:zones[zi].name,pr,old,val});
   zones[zi].durations[pr]=val;
   renderZones();
-  await fetch('/setzone?id='+zi+'&d'+pr+'='+val);
+  await post('/setzone?id='+zi+'&d'+pr+'='+val);
 }
 
 function toggleSet(s,i){s.has(i)?s.delete(i):s.add(i);renderZones();}
@@ -1513,7 +1546,7 @@ async function toggleZDay(zi,pr,day){
   z.zdays[pr]=oldMask^(1<<day);
   pushCL({type:'zoneDay',zi,name:z.name,pr,day,val:(z.zdays[pr]>>day)&1});
   renderZones();
-  await fetch('/setzone?id='+zi+'&zd'+pr+'='+z.zdays[pr]);
+  await post('/setzone?id='+zi+'&zd'+pr+'='+z.zdays[pr]);
 }
 function toggleEdit(i){toggleSet(editing,i);}
 
@@ -1525,7 +1558,7 @@ async function toggleZoneEn(i){
   z.enabled=next;
   pushCL({type:'zoneEn',zi:i,name:z.name,val:next});
   renderZones();
-  await fetch('/setzone?id='+i+'&en='+(next?1:0));
+  await post('/setzone?id='+i+'&en='+(next?1:0));
 }
 
 async function saveZone(i){
@@ -1534,7 +1567,7 @@ async function saveZone(i){
   if(isNaN(pin)||pin<0||pin>48)return;
   if(name!==zones[i].name) pushCL({type:'zoneName',zi:i,old:zones[i].name,val:name});
   if(pin!==zones[i].pin) pushCL({type:'zonePin',zi:i,name:zones[i].name,old:zones[i].pin,val:pin});
-  await fetch('/setzone?id='+i+'&name='+encodeURIComponent(name)+'&pin='+pin);
+  await post('/setzone?id='+i+'&name='+encodeURIComponent(name)+'&pin='+pin);
   zones[i].name=name;zones[i].pin=pin;
   editing.delete(i);renderZones();
 }
@@ -1564,7 +1597,7 @@ function rnShowCustom(){
 }
 async function rnRun(secs){
   document.getElementById('rn-modal').style.display='none';
-  await fetch('/relay?id='+rnZone+'&state=1&secs='+secs);
+  await post('/relay?id='+rnZone+'&state=1&secs='+secs);
   queued=[...queued,rnZone];
   rnZone=-1;
   render();
@@ -1578,20 +1611,20 @@ async function rnConfirm(){
   rnRun(Math.max(1,m*60+s));
 }
 async function runZoneDur(i,secs){
-  await fetch('/relay?id='+i+'&state=1&secs='+secs);
+  await post('/relay?id='+i+'&state=1&secs='+secs);
   if(!queued.includes(i))queued=[...queued,i];
   render();
   schedFetch();
 }
 async function runProgram(i){
-  await fetch('/runprogram?id='+i);
+  await post('/runprogram?id='+i);
   zones.forEach((z,zi)=>{if((z.durations[i]||0)>0&&!queued.includes(zi))queued=[...queued,zi];});
   render();
   schedFetch();
 }
 
 async function allOff(){
-  await fetch('/alloff');
+  await post('/alloff');
   activeZone=-1;queued=[];render();
 }
 
@@ -1667,7 +1700,7 @@ async function openChangeLog(){
 function closeChangeLog(){document.getElementById('clog-ov').style.display='none';}
 async function clearChangeLog(){
   if(!confirm('Clear all change history?'))return;
-  await fetch('/clearcl');
+  await post('/clearcl?confirm=1');
   renderChangeLog();
 }
 async function renderChangeLog(){
@@ -1684,9 +1717,6 @@ async function renderChangeLog(){
     days[dk].entries.push(e);
   });
   const sortedDays=Object.keys(days).sort((a,b)=>b-a);
-  const prN=['Morning','Afternoon'];
-  const DN=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-  function fmtT(hm){const s=String(hm??'');const[h,m]=s.split(':').map(Number);if(isNaN(h)||isNaN(m))return s;const ap=h>=12?'PM':'AM';const h12=h%12||12;return h12+':'+(m<10?'0':'')+m+' '+ap;}
   function clRow(left,mid,right,ts){
     // left is pre-escaped by the callers; mid/right carry /pushcl-supplied values.
     return '<div class="log-entry">'+left+(mid?'<span style="font-size:.68rem;color:#94a3b8;white-space:nowrap">'+esc(mid)+'</span>':'')+
@@ -1703,30 +1733,8 @@ async function renderChangeLog(){
       '<div class="log-day-content" style="display:'+(open?'block':'none')+';">';
     entries.forEach(e=>{
       const ts=new Date(e.ts*1000).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
-      const t=e.type||'duration';
-      const zn='<span class="log-zone">';
-      if(t==='duration')
-        html+=clRow(zn+esc(e.name)+'</span>',prN[e.pr]||'Prog '+e.pr,[e.val<e.old?'#f87171':'#22c55e',fmtDur(e.old)+' → '+fmtDur(e.val)],ts);
-      else if(t==='zoneDay')
-        html+=clRow(zn+esc(e.name)+'</span>',prN[e.pr]+' · '+DN[e.day],[e.val?'#22c55e':'#f87171',e.val?'on':'off'],ts);
-      else if(t==='progDay')
-        html+=clRow(zn+esc(e.prog)+'</span>',DN[e.day],[e.val?'#22c55e':'#f87171',e.val?'on':'off'],ts);
-      else if(t==='progEn')
-        html+=clRow(zn+esc(e.prog)+'</span>',null,[e.val?'#22c55e':'#f87171',e.val?'enabled':'disabled'],ts);
-      else if(t==='zoneEn')
-        html+=clRow(zn+esc(e.name)+'</span>','zone',[e.val?'#22c55e':'#f87171',e.val?'switched on':'switched off'],ts);
-      else if(t==='progTime')
-        html+=clRow(zn+esc(e.prog)+'</span>',null,['#22c55e',fmtT(e.old)+' → '+fmtT(e.val)],ts);
-      else if(t==='zoneName')
-        html+=clRow(zn+esc(e.old)+' → '+esc(e.val)+'</span>','renamed',['#22c55e',''],ts);
-      else if(t==='zonePin')
-        html+=clRow(zn+esc(e.name)+'</span>','GPIO',['#22c55e','pin '+e.old+' → '+e.val],ts);
-      else if(t==='coolPct')
-        html+=clRow(zn+'Cool day %</span>',null,['#22c55e',e.old+'% → '+e.val+'%'],ts);
-      else if(t==='hotPct')
-        html+=clRow(zn+'Hot day %</span>',null,['#fb923c',e.old+'% → '+e.val+'%'],ts);
-      else if(t==='weatherCond')
-        html+=clRow(zn+'Weather conditions</span>',null,['#7dd3fc','updated'],ts);
+      const d=clDescribe(e);
+      html+=clRow('<span class="log-zone">'+esc(d.what)+'</span>',d.mid,[d.color,d.detail],ts);
     });
     html+='</div></div>';
   });
@@ -1758,7 +1766,6 @@ async function downloadLogs(){
       return h+':'+m+' '+ap;
     }
     function q(s){return'"'+String(s).replace(/\r?\n/g,' ').replace(/"/g,'""')+'"';}
-    function fs(s){const m=Math.floor(s/60),sc=s%60;return m>0?m+'m'+(sc?' '+sc+'s':''):sc+'s';}
     let csv='';
     csv+='=== WEATHER LOG ===\r\nDate,Time,Type,Max Temp (F),Precip (mm),Cloud %,Wind (kph),Scale %,Status\r\n';
     wlog.forEach(e=>{
@@ -1770,27 +1777,13 @@ async function downloadLogs(){
     csv+='\r\n=== RUN HISTORY ===\r\nDate,Time,Zone,Duration,Water (gal),Trigger\r\n';
     if(hist.count)[...hist.history].reverse().forEach(e=>{
       const gal=e.gallonsX10>0?(e.gallonsX10/10).toFixed(1):'';
-      csv+=csvDate(e.start,false)+','+csvTime(e.start,false)+','+q(e.name)+','+fs(e.durationSecs)+','+gal+','+q(e.trigger)+'\r\n';
+      csv+=csvDate(e.start,false)+','+csvTime(e.start,false)+','+q(e.name)+','+fmtDur(e.durationSecs)+','+gal+','+q(e.trigger)+'\r\n';
     });
     csv+='\r\n=== CHANGE LOG ===\r\nDate,Time,Type,What,Detail\r\n';
-    const prNC=['Morning','Afternoon'];
-    const DNC=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-    function fmtTC(hm){const s=String(hm??'');const[h,m]=s.split(':').map(Number);if(isNaN(h)||isNaN(m))return s;const ap=h>=12?'PM':'AM';const h12=h%12||12;return h12+':'+(m<10?'0':'')+m+' '+ap;}
     [...clog].reverse().forEach(e=>{
-      const t=e.type||'duration';
-      let what='',detail='';
-      if(t==='duration'){what=q((e.name||'')+(e.pr!=null?' · '+prNC[e.pr]:''));detail=fs(e.old)+' → '+fs(e.val);}
-      else if(t==='zoneDay'){what=q((e.name||'')+(e.pr!=null?' · '+prNC[e.pr]:'')+' · '+DNC[e.day]);detail=e.val?'on':'off';}
-      else if(t==='progDay'){what=q((e.prog||'')+' · '+DNC[e.day]);detail=e.val?'on':'off';}
-      else if(t==='progEn'){what=q(e.prog||'');detail=e.val?'enabled':'disabled';}
-      else if(t==='zoneEn'){what=q(e.name||'');detail=e.val?'switched on':'switched off';}
-      else if(t==='progTime'){what=q(e.prog||'');detail=fmtTC(e.old)+' → '+fmtTC(e.val);}
-      else if(t==='zoneName'){what=q(e.old+' → '+e.val);detail='renamed';}
-      else if(t==='zonePin'){what=q(e.name||'');detail='GPIO pin '+e.old+' → '+e.val;}
-      else if(t==='coolPct'){what='Cool day %';detail=e.old+'% → '+e.val+'%';}
-      else if(t==='hotPct'){what='Hot day %';detail=e.old+'% → '+e.val+'%';}
-      else if(t==='weatherCond'){what='Weather conditions';detail='updated';}
-      csv+=csvDate(e.ts,true)+','+csvTime(e.ts,true)+','+t+','+what+','+detail+'\r\n';
+      const d=clDescribe(e);
+      const what=d.what+(d.mid?' · '+d.mid:'');
+      csv+=csvDate(e.ts,true)+','+csvTime(e.ts,true)+','+(e.type||'duration')+','+q(what)+','+q(d.detail)+'\r\n';
     });
     csv+='\r\n=== TEMPERATURE HISTORY ===\r\nDate,Time,Temp (F)\r\n';
     tlog.forEach(e=>{csv+=csvDate(e.t,false)+','+csvTime(e.t,false)+','+e.f+'\r\n';});
@@ -1834,7 +1827,7 @@ async function manualFetch(){
   const btn=document.getElementById('wfetch-btn');
   btn.disabled=true; btn.textContent='…';
   try{
-    await fetch('/fetchweather');
+    await post('/fetchweather');
     await new Promise(r=>setTimeout(r,15000));
     await loadWeatherLog();
   }finally{btn.disabled=false;btn.innerHTML='&#8635; Fetch';}
@@ -1862,7 +1855,7 @@ function fmtZoneFlowStatus(i){
 }
 async function resetZoneBaseline(zi){
   if(!confirm('Reset flow baseline for '+(zones[zi]?.name||('Zone '+(zi+1)))+'?\nIt will re-learn from the next 3 runs.'))return;
-  await fetch('/resetflowbaseline?zone='+zi);
+  await post('/resetflowbaseline?zone='+zi);
   await fetchConfig();
 }
 function updateFlowRow(galToday, galWeek){
@@ -1915,9 +1908,9 @@ function closeFlowCal(){
 }
 async function startFlowCal(){
   const zoneIdx=parseInt(document.getElementById('fcal-zone').value);
-  await fetch('/flowcal/start');
+  await post('/flowcal/start');
   // turn on selected zone with a long timeout (30 min max for cal)
-  await fetch('/relay?id='+zoneIdx+'&state=1&secs=1800');
+  await post('/relay?id='+zoneIdx+'&state=1&secs=1800');
   queued=[...queued,zoneIdx];
   render();
   fcalRunning=true;
@@ -1931,7 +1924,7 @@ async function stopFlowCal(silent){
   fcalRunning=false;
   const zoneIdx=parseInt(document.getElementById('fcal-zone').value);
   // stop the zone
-  await fetch('/relay?id='+zoneIdx+'&state=0');
+  await post('/relay?id='+zoneIdx+'&state=0');
   queued=queued.filter(z=>z!==zoneIdx);
   if(activeZone===zoneIdx)activeZone=-1;
   render();
@@ -1952,8 +1945,8 @@ async function saveFlowCal(){
   if(isNaN(pin)||pin<0||pin>48){document.getElementById('fcal-status').textContent='Invalid GPIO pin.';return;}
   if(isNaN(ppg)||ppg<1){document.getElementById('fcal-status').textContent='Enter a valid pulses/gal value.';return;}
   await Promise.all([
-    fetch('/setflow?pin='+pin+'&ppg='+ppg),
-    (!isNaN(thresh)&&thresh>=10&&thresh<=99)?fetch('/setflowthresh?pct='+thresh):Promise.resolve()
+    post('/setflow?pin='+pin+'&ppg='+ppg),
+    (!isNaN(thresh)&&thresh>=10&&thresh<=99)?post('/setflowthresh?pct='+thresh):Promise.resolve()
   ]);
   closeFlowCal();
   await fetchConfig();
@@ -1961,7 +1954,7 @@ async function saveFlowCal(){
 async function resetFlowBaseline(){
   const zi=parseInt(document.getElementById('fcal-zone').value);
   if(!confirm('Reset flow baseline for '+(zones[zi]?.name||('Zone '+(zi+1)))+'? It will re-learn from the next '+3+' runs.'))return;
-  await fetch('/resetflowbaseline?zone='+zi);
+  await post('/resetflowbaseline?zone='+zi);
   await fetchConfig();
   updateBaselineInfo();
   document.getElementById('fcal-status').textContent='Baseline reset. Will re-learn from next 3 runs.';
@@ -1983,7 +1976,7 @@ function updateAlarmBanner(){
 async function dismissFlowAlarm(){
   document.getElementById('flow-alarm-banner').style.display='none';
   flowConfig.dismissed=(flowConfig.dismissed||0)|(flowConfig.alarm||0);
-  try{await fetch('/dismissflowalarm');}catch(e){console.error('dismissFlowAlarm:',e);}
+  try{await post('/dismissflowalarm');}catch(e){console.error('dismissFlowAlarm:',e);}
 }
 
 function setTheme(t){
@@ -1997,16 +1990,30 @@ function cycleTheme(){
   setTheme({dark:'light',light:'color',color:'dark'}[cur]||'light');
 }
 function makeDraggable(el,handle){
+  if(!el||!handle)return;
   var ox=0,oy=0;
-  handle.addEventListener('mousedown',function(e){
-    if(e.button!==0)return;
+  handle.addEventListener('pointerdown',function(e){
+    if(e.pointerType==='mouse'&&e.button!==0)return;
     e.preventDefault();
-    var sx=e.clientX-ox,sy=e.clientY-oy;
+    var id=e.pointerId,sx=e.clientX-ox,sy=e.clientY-oy;
     handle.style.cursor='grabbing';
-    function mv(e){ox=e.clientX-sx;oy=e.clientY-sy;el.style.transform='translate('+ox+'px,'+oy+'px)';}
-    function up(){handle.style.cursor='grab';document.removeEventListener('mousemove',mv);document.removeEventListener('mouseup',up);}
-    document.addEventListener('mousemove',mv);
-    document.addEventListener('mouseup',up);
+    try{handle.setPointerCapture(id);}catch(_){}
+    function mv(ev){
+      if(ev.pointerId!==id)return;
+      ox=ev.clientX-sx;oy=ev.clientY-sy;
+      el.style.transform='translate('+ox+'px,'+oy+'px)';
+    }
+    function up(ev){
+      if(ev.pointerId!==id)return;
+      handle.style.cursor='grab';
+      try{handle.releasePointerCapture(id);}catch(_){}
+      handle.removeEventListener('pointermove',mv);
+      handle.removeEventListener('pointerup',up);
+      handle.removeEventListener('pointercancel',up);
+    }
+    handle.addEventListener('pointermove',mv);
+    handle.addEventListener('pointerup',up);
+    handle.addEventListener('pointercancel',up);
   });
 }
 (function(){
@@ -2285,7 +2292,7 @@ void setup() {
     req->send(200, "application/json", buildConfigJson());
   });
 
-  server.on("/setcoolpct", HTTP_GET, [](AsyncWebServerRequest* req){
+  server.on("/setcoolpct", HTTP_POST, [](AsyncWebServerRequest* req){
     if (req->hasParam("pct")) {
       coolDayPct = (uint8_t)constrain(req->getParam("pct")->value().toInt(), 10, 90);
       markDirty(DIRTY_CONFIG);
@@ -2293,7 +2300,7 @@ void setup() {
     req->send(200, "text/plain", "ok");
   });
 
-  server.on("/sethotpct", HTTP_GET, [](AsyncWebServerRequest* req){
+  server.on("/sethotpct", HTTP_POST, [](AsyncWebServerRequest* req){
     if (req->hasParam("pct")) {
       hotDayPct = (uint8_t)constrain(req->getParam("pct")->value().toInt(), 100, 200);
       markDirty(DIRTY_CONFIG);
@@ -2301,7 +2308,7 @@ void setup() {
     req->send(200, "text/plain", "ok");
   });
 
-  server.on("/setweatherconds", HTTP_GET, [](AsyncWebServerRequest* req){
+  server.on("/setweatherconds", HTTP_POST, [](AsyncWebServerRequest* req){
     if (req->hasParam("htf"))  hotTempF      = (uint8_t)constrain(req->getParam("htf")->value().toInt(),  50, 120);
     if (req->hasParam("hwk"))  hotWindKph    = (uint8_t)constrain(req->getParam("hwk")->value().toInt(),   0,  80);
     if (req->hasParam("hof"))  hotOverrideF  = (uint8_t)constrain(req->getParam("hof")->value().toInt(),  50, 120);
@@ -2312,7 +2319,7 @@ void setup() {
     req->send(200, "text/plain", "ok");
   });
 
-  server.on("/fetchweather", HTTP_GET, [](AsyncWebServerRequest* req){
+  server.on("/fetchweather", HTTP_POST, [](AsyncWebServerRequest* req){
     if (weatherTaskHandle) xTaskNotify(weatherTaskHandle, 1UL, eSetValueWithOverwrite);
     req->send(200, "text/plain", "ok");
   });
@@ -2332,7 +2339,7 @@ void setup() {
     req->send(200, "application/json", j);
   });
 
-  server.on("/runprogram", HTTP_GET, [](AsyncWebServerRequest* req){
+  server.on("/runprogram", HTTP_POST, [](AsyncWebServerRequest* req){
     if (!req->hasParam("id")) { req->send(400,"text/plain","missing id"); return; }
     int id = req->getParam("id")->value().toInt();
     if (id < 0 || id >= NUM_PROGRAMS) { req->send(400,"text/plain","bad id"); return; }
@@ -2345,7 +2352,7 @@ void setup() {
     req->send(200,"text/plain","ok");
   });
 
-  server.on("/setprogram", HTTP_GET, [](AsyncWebServerRequest* req){
+  server.on("/setprogram", HTTP_POST, [](AsyncWebServerRequest* req){
     if (!req->hasParam("id")) { req->send(400,"text/plain","missing id"); return; }
     int id = req->getParam("id")->value().toInt();
     if (id < 0 || id >= NUM_PROGRAMS) { req->send(400,"text/plain","bad id"); return; }
@@ -2366,7 +2373,7 @@ void setup() {
     req->send(200,"text/plain","ok");
   });
 
-  server.on("/setzone", HTTP_GET, [](AsyncWebServerRequest* req){
+  server.on("/setzone", HTTP_POST, [](AsyncWebServerRequest* req){
     if (!req->hasParam("id")) { req->send(400,"text/plain","missing id"); return; }
     int idx = req->getParam("id")->value().toInt();
     if (idx < 0 || idx >= NUM_ZONES) { req->send(400,"text/plain","bad id"); return; }
@@ -2407,7 +2414,7 @@ void setup() {
     req->send(200,"text/plain","ok");
   });
 
-  server.on("/relay", HTTP_GET, [](AsyncWebServerRequest* req){
+  server.on("/relay", HTTP_POST, [](AsyncWebServerRequest* req){
     if (req->hasParam("id") && req->hasParam("state")) {
       int  idx = req->getParam("id")->value().toInt();
       bool on  = req->getParam("state")->value() == "1";
@@ -2430,7 +2437,7 @@ void setup() {
     req->send(200,"text/plain","ok");
   });
 
-  server.on("/alloff", HTTP_GET, [](AsyncWebServerRequest* req){
+  server.on("/alloff", HTTP_POST, [](AsyncWebServerRequest* req){
     allOffFn();
     req->send(200,"text/plain","ok");
   });
@@ -2459,7 +2466,7 @@ void setup() {
     req->send(200, "application/json", j);
   });
 
-  server.on("/sethistory", HTTP_GET, [](AsyncWebServerRequest* req){
+  server.on("/sethistory", HTTP_POST, [](AsyncWebServerRequest* req){
     if (req->hasParam("days")) {
       historyDays = (uint8_t)constrain(req->getParam("days")->value().toInt(), 1, 90);
       markDirty(DIRTY_CONFIG | DIRTY_PURGE | DIRTY_HISTORY);
@@ -2475,7 +2482,7 @@ void setup() {
     req->send(200, "application/json", out);
   });
 
-  server.on("/pushcl", HTTP_GET, [](AsyncWebServerRequest* req){
+  server.on("/pushcl", HTTP_POST, [](AsyncWebServerRequest* req){
     if (!req->hasParam("e")) { req->send(400); return; }
     String entry = req->getParam("e")->value();
     if (clMux) xSemaphoreTake(clMux, portMAX_DELAY);
@@ -2494,7 +2501,11 @@ void setup() {
     req->send(200, "text/plain", "ok");
   });
 
-  server.on("/clearcl", HTTP_GET, [](AsyncWebServerRequest* req){
+  server.on("/clearcl", HTTP_POST, [](AsyncWebServerRequest* req){
+    if (!req->hasParam("confirm") || req->getParam("confirm")->value() != "1") {
+      req->send(400, "text/plain", "missing confirm=1");
+      return;
+    }
     if (clMux) xSemaphoreTake(clMux, portMAX_DELAY);
     clJson = "[]";
     if (clMux) xSemaphoreGive(clMux);
@@ -2530,7 +2541,7 @@ void setup() {
     req->send(200, "application/json", j);
   });
 
-  server.on("/flowcal/start", HTTP_GET, [](AsyncWebServerRequest* req){
+  server.on("/flowcal/start", HTTP_POST, [](AsyncWebServerRequest* req){
     portENTER_CRITICAL(&flowMux); flowPulseCount = 0; portEXIT_CRITICAL(&flowMux);
     req->send(200, "text/plain", "ok");
   });
@@ -2541,7 +2552,7 @@ void setup() {
     req->send(200, "application/json", buf);
   });
 
-  server.on("/setflow", HTTP_GET, [](AsyncWebServerRequest* req){
+  server.on("/setflow", HTTP_POST, [](AsyncWebServerRequest* req){
     bool changed = false;
     if (req->hasParam("pin")) {
       uint8_t p = (uint8_t)constrain(req->getParam("pin")->value().toInt(), 0, 48);
@@ -2555,7 +2566,7 @@ void setup() {
     req->send(200, "text/plain", "ok");
   });
 
-  server.on("/setflowthresh", HTTP_GET, [](AsyncWebServerRequest* req){
+  server.on("/setflowthresh", HTTP_POST, [](AsyncWebServerRequest* req){
     if (req->hasParam("pct")) {
       flowAlarmThreshPct = (uint8_t)constrain(req->getParam("pct")->value().toInt(), 10, 99);
       markDirty(DIRTY_CONFIG);
@@ -2563,7 +2574,7 @@ void setup() {
     req->send(200, "text/plain", "ok");
   });
 
-  server.on("/dismissflowalarm", HTTP_GET, [](AsyncWebServerRequest* req){
+  server.on("/dismissflowalarm", HTTP_POST, [](AsyncWebServerRequest* req){
     // Dismiss the currently-active low-flow alarm(s) so the banner stays hidden
     // across refreshes. A fresh low-flow instance re-clears these bits in checkFlowRate.
     zoneFlowAlarmDismissed |= zoneFlowAlarmBits;
@@ -2571,7 +2582,7 @@ void setup() {
     req->send(200, "text/plain", "ok");
   });
 
-  server.on("/resetflowbaseline", HTTP_GET, [](AsyncWebServerRequest* req){
+  server.on("/resetflowbaseline", HTTP_POST, [](AsyncWebServerRequest* req){
     if (!req->hasParam("zone")) { req->send(400, "text/plain", "missing zone"); return; }
     int z = req->getParam("zone")->value().toInt();
     if (z < 0 || z >= NUM_ZONES) { req->send(400, "text/plain", "bad zone"); return; }
